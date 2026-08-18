@@ -1,8 +1,16 @@
 # wecode
 
+[![License: MIT](https://img.shields.io/github/license/jiawei666/wecode)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+
 通过微信 iLink 控制本机 Codex 交互会话的轻量桥接服务。
 
 你可以在微信里登录并绑定本机服务，然后用自然语言让 Codex 处理代码任务、切换项目和恢复历史会话。wecode 不保存 Codex 对话内容，只维护微信用户与 Codex thread 的本地绑定关系。
+
+项目地址：[github.com/jiawei666/wecode](https://github.com/jiawei666/wecode)。当前定位是个人本机工具和受控内测版本，不是面向公网的多租户服务。
+
+> [!WARNING]
+> wecode 当前会以 `approval_policy=never`、`danger-full-access` 运行 Codex，并允许远程消息驱动本机任务。请只在你完全信任的机器上运行，显式配置微信用户白名单，并把工作目录限制在专用环境内。
 
 ## 功能
 
@@ -35,20 +43,20 @@ Codex 原生 thread 是会话真相。wecode 只保存微信账号到 thread 的
 
 - Node.js 22 或更高版本。
 - 已安装并登录的 Codex CLI，且 `codex` 可执行。
-- `tmux`，用于本地 TUI 会话。
+- `tmux` 和 `curl`，分别用于本地 TUI 会话和 App Server 健康检查。
 - Linux/macOS 均可运行；systemd 用户服务仅适用于 Linux。
 - `cloudflared` 是可选依赖，仅在需要自动生成公网分享页时使用。
 
 ## 快速开始
 
 ```bash
-git clone <repository-url> wecode
+git clone https://github.com/jiawei666/wecode.git
 cd wecode
-npm install
+npm ci
 cp .env.example .env
 ```
 
-编辑 `.env`，至少确认 Codex 命令和允许接收消息的微信用户配置正确：
+编辑 `.env`，至少确认 Codex 命令、模型和允许接收消息的微信用户配置正确。共享或长期运行的机器不要同时留空 `WECHATBOT_ALLOWED_USER` 和二维码登录返回的用户：
 
 ```dotenv
 WECHATBOT_ALLOWED_USER=你的微信用户ID
@@ -75,11 +83,14 @@ npm run build
 npm start
 ```
 
+`npm start` 会运行 `dist/src/index.js run`；源码开发时可以直接使用 `npm run dev -- run`。
+
 ## systemd 用户服务
 
 在项目目录执行安装脚本，脚本会根据当前机器动态生成绝对路径：
 
 ```bash
+npm run build
 scripts/install-systemd-user.sh
 systemctl --user status wecode.service
 ```
@@ -105,6 +116,8 @@ loginctl enable-linger "$USER"
 | `WECHATBOT_DEFAULT_CWD` | 新会话默认工作目录 |
 | `CODEX_COMMAND` | Codex CLI 路径或命令名 |
 | `CODEX_MODEL` / `CONTROL_MODEL` | 目标会话和控制 Agent 的模型 |
+| `CODEX_REASONING_EFFORT` / `CONTROL_REASONING_EFFORT` | 两类 Agent 的推理强度 |
+| `CODEX_FAST` | 是否为目标会话启用 fast service tier |
 | `CODEX_APP_ENDPOINT` | 本机 Codex App Server WebSocket 地址 |
 | `CLOUDFLARED_COMMAND` | `cloudflared` 路径或命令名 |
 | `SHARE_PAGE_BASE_URL` | 自建反向代理的分享页基地址；为空时尝试 Quick Tunnel |
@@ -128,11 +141,24 @@ loginctl enable-linger "$USER"
 
 没有当前会话时，普通消息会进入控制 Agent；绑定会话后，普通消息直达 Codex。控制模式中的普通消息继续交给控制 Agent，`/new`、`/use` 和 `/raw` 是显式会话操作。
 
+## 当前限制
+
+- 当前只处理文字消息；图片、文件、视频和无文字语音只保留附件元数据，不会自动下载并交给 Codex。
+- 设计目标是单机、少量用户场景；没有租户隔离、配额、速率限制或多实例协调。
+- 没有真实微信 iLink、Codex App Server、tmux 和 Cloudflare Tunnel 的端到端测试，首次部署请先在非生产机器验证。
+- 分享页是带随机路径的临时页面，不等于访问认证；不要把敏感报告通过公网链接分享。
+
 ## 安全注意事项
 
-wecode 会调用 Codex 的 full-access/yolo 能力处理本机任务。请只在你信任的机器上运行，并务必配置 `WECHATBOT_ALLOWED_USER`，不要把服务端口直接暴露到公网。Quick Tunnel 生成的分享链接可能包含报告内容，请按敏感信息等级使用。
+wecode 会调用 Codex 的 full-access/yolo 能力处理本机任务。请遵循以下边界：
 
-仓库默认忽略 `.env`、`.data/`、`runtime/`、`dist/`、`node_modules/` 和本地 `cloudflared` 二进制。发布前仍应检查 `git diff --cached`，确认没有凭证或个人文件。
+- 只在专用、低权限的本机用户下运行；不要在存放 SSH 密钥、云凭证或生产数据的账号上直接启用。
+- 显式设置 `WECHATBOT_ALLOWED_USER`，并将 `WECHATBOT_SEARCH_ROOTS`、`WECHATBOT_DEFAULT_CWD` 指向必要的最小目录。
+- 不要把服务端口、Codex App Server 或 tmux 会话暴露到公网。
+- Quick Tunnel 或自定义反向代理生成的链接可能包含代码、路径和日志；把它们当作 bearer token 使用。
+- 不要提交 `.env`、`.data/`、`runtime/`、个人路径或其他运行时文件；发布前检查 `git diff --cached`。
+
+仓库默认忽略 `.env`、`.data/`、`runtime/`、`dist/`、`node_modules/` 和本地 `cloudflared` 二进制，但忽略规则不能替代人工检查。
 
 ## 开发与验证
 
@@ -152,6 +178,10 @@ scripts/                安装和运维脚本
 schemas/                控制 Agent 返回的 action schema
 test/                   自动化测试
 ```
+
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request。提交前请至少运行 `npm test`、`npm run lint` 和 `npm run build`，并确认示例配置不包含真实凭证或个人路径。
 
 ## License
 
