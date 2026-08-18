@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "cli", "cwd", "thread_id", "text", "title", "model", "reasoning_effort", "fast", "note", "presentation", "reason"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "new_session",
+        "switch_session",
+        "list_sessions",
+        "status",
+        "interrupt",
+        "raw_input",
+        "set_note",
+        "reply",
+        "ask"
+      ]
+    },
+    "cli": { "type": ["string", "null"], "enum": ["codex", "cc", null] },
+    "cwd": { "type": ["string", "null"] },
+    "thread_id": { "type": ["string", "null"] },
+    "text": { "type": ["string", "null"] },
+    "title": { "type": ["string", "null"] },
+    "model": { "type": ["string", "null"] },
+    "reasoning_effort": { "type": ["string", "null"] },
+    "fast": { "type": ["boolean", "null"] },
+    "note": { "type": ["string", "null"] },
+    "presentation": { "type": ["string", "null"], "enum": ["chat", "page", null] },
+    "reason": { "type": ["string", "null"] }
+  }
+}

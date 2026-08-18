@@ -1,0 +1,30 @@
+{
+  "name": "wecode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "微信控制本地 Codex 交互会话的桥接服务",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js run",
+    "test": "tsx --test test/**/*.test.ts",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "marked": "^15.0.12",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "@types/ws": "^8.5.13"
+  }
+}

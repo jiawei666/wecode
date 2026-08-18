@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.data/
+.env
+.env.*
+!.env.example
+*.log
+runtime/
+# Install cloudflared separately or provide CLOUDFLARED_COMMAND; keep any local binary out of commits.
+bin/cloudflared

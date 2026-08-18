@@ -1,0 +1,21 @@
+[Unit]
+# Template rendered by scripts/install-systemd-user.sh; do not install this file directly.
+Description=wecode WeChat Codex bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__WECHATBOT_PROJECT_DIR__
+ExecStart=__WECHATBOT_NODE_BIN__ __WECHATBOT_PROJECT_DIR__/dist/src/index.js run
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=HOME=__WECHATBOT_HOME_DIR__
+Environment=PATH=__WECHATBOT_NODE_DIR__:__WECHATBOT_HOME_DIR__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=-__WECHATBOT_PROJECT_DIR__/.env
+StandardOutput=append:__WECHATBOT_PROJECT_DIR__/runtime/wecode.log
+StandardError=append:__WECHATBOT_PROJECT_DIR__/runtime/wecode.err.log
+
+[Install]
+WantedBy=default.target
