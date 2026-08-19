@@ -79,7 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     controlTimeoutMs: numberEnvValue(env.WECHATBOT_CONTROL_TIMEOUT_MS, 30 * 60_000),
     selectionTimeoutMs: numberEnvValue(env.WECHATBOT_SELECTION_TIMEOUT_MS, 10 * 60_000),
     bindingHistoryLimit: numberEnvValue(env.WECHATBOT_BINDING_HISTORY_LIMIT, 5),
-    sessionListLimit: numberEnvValue(env.WECHATBOT_SESSION_LIST_LIMIT, 20),
+    sessionListLimit: numberEnvValue(env.WECHATBOT_SESSION_LIST_LIMIT, 5),
     pollTimeoutMs: numberEnvValue(env.WECHATBOT_POLL_TIMEOUT_MS, 35_000),
   };
 }

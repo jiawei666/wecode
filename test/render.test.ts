@@ -8,7 +8,7 @@ import { normalizeWechatText, renderPageHtml, renderResponse, splitWechatText, P
 
 test('normalizes common Codex markdown for WeChat', () => {
   const result = normalizeWechatText('\u001b[32m# 结果\u001b[0m\n\n**完成**：[查看](https://example.com)');
-  assert.equal(result, '【结果】\n\n完成：查看 (https://example.com)');
+  assert.equal(result, '# 结果\n\n**完成**：[查看](https://example.com)');
 });
 
 test('splits by readable blocks and keeps Unicode intact', () => {

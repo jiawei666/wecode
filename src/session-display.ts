@@ -39,7 +39,7 @@ export function buildSessionList(
   merged.sort((left, right) => {
     if (left.id === current?.threadId) return -1;
     if (right.id === current?.threadId) return 1;
-    return (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0);
+    return (normalizeTimestamp(right.updatedAt ?? right.createdAt) ?? 0) - (normalizeTimestamp(left.updatedAt ?? left.createdAt) ?? 0);
   });
 
   const limit = options.limit ?? config.sessionListLimit;
@@ -58,16 +58,14 @@ export function buildSessionList(
   if (!visible.length) return { text: '没有找到 Codex 原生会话。', items: [] };
   const lines = visible.map((thread, index) => {
     const note = notes[thread.id] || thread.name;
-    const title = truncate(note || thread.preview || path.basename(thread.cwd || '') || '未命名会话', 42);
-    const project = thread.cwd ? path.basename(thread.cwd) : '未知目录';
-    const model = formatModel(thread.model, thread.reasoningEffort, thread.serviceTier);
-    const shortId = options.fullIds ? thread.id : shortIdOf(thread.id);
+    const title = truncate(note || thread.preview || '未命名会话', 60);
+    const project = thread.cwd ? path.basename(thread.cwd) || '未知目录' : '未知目录';
     const currentMark = thread.id === current?.threadId ? ' · 当前' : '';
-    return `${index + 1}. [${cliLabel(thread.cli)}] ${title}${currentMark}\n   ${project} · ${relativeTime(thread.updatedAt ?? thread.createdAt)} · ${model}\n   ${shortId}`;
+    return `${index + 1}. ${project}${currentMark}\n   ${title} · ${formatTimestamp(thread.updatedAt ?? thread.createdAt)}`;
   });
   const scope = visible.length < merged.length ? `最近 ${visible.length}/${merged.length}` : `${visible.length}`;
   return {
-    text: `Codex 会话（${scope}）:\n\n${lines.join('\n\n')}\n\n回复序号切换（${Math.round(config.selectionTimeoutMs / 60_000)} 分钟内），或发送 /use <完整 ID>。`,
+    text: `Codex 会话（${scope}）:\n\n${lines.join('\n\n')}\n\n回复序号切换（${Math.round(config.selectionTimeoutMs / 60_000)} 分钟内）。`,
     items,
   };
 }
@@ -91,14 +89,30 @@ function cliLabel(cli?: ThreadSummary['cli']): string {
   return cli === 'cc' ? 'CC' : 'Codex';
 }
 
-export function relativeTime(timestamp?: number): string {
-  if (!timestamp) return '时间未知';
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return '刚刚';
-  if (seconds < 3600) return `${Math.round(seconds / 60)}分钟前`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}小时前`;
-  if (seconds < 604800) return `${Math.round(seconds / 86400)}天前`;
-  return new Date(timestamp).toLocaleDateString('zh-CN');
+export function relativeTime(timestamp?: number | string): string {
+  return formatTimestamp(timestamp);
+}
+
+export function normalizeTimestamp(timestamp?: number | string): number | undefined {
+  const raw = typeof timestamp === 'string' ? timestamp.trim() : timestamp;
+  const numeric = typeof raw === 'string' ? Number(raw) : raw;
+  const value = Number.isFinite(numeric)
+    ? numeric
+    : typeof raw === 'string' && raw
+      ? Date.parse(raw)
+      : undefined;
+  if (!Number.isFinite(value) || !value || (value ?? 0) < 0) return undefined;
+  const milliseconds = (value ?? 0) < 100_000_000_000 ? (value ?? 0) * 1000 : value ?? 0;
+  return Number.isFinite(milliseconds) ? milliseconds : undefined;
+}
+
+export function formatTimestamp(timestamp?: number | string): string {
+  const milliseconds = normalizeTimestamp(timestamp);
+  if (milliseconds === undefined) return '时间未知';
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) return '时间未知';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function truncate(value: string, max: number): string {

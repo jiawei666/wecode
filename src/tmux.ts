@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readdir, readFile } from 'node:fs/promises';
 import type { AppConfig } from './config.js';
 import type { SessionLaunchOptions } from './model.js';
 
@@ -47,6 +48,12 @@ export function tmuxSessionName(threadId: string): string {
 export interface TmuxStatus {
   exists: boolean;
   attachedClients: number;
+}
+
+export interface NativeReleaseResult {
+  matched: boolean;
+  stopped: boolean;
+  pids: number[];
 }
 
 export class TmuxManager {
@@ -99,7 +106,88 @@ export class TmuxManager {
     await run('tmux', ['send-keys', '-t', session, 'Enter']);
   }
 
-  async kill(session: string): Promise<void> {
+  async kill(session: string, threadId?: string): Promise<void> {
+    const managed = threadId ? await this.status(session) : undefined;
     await run('tmux', ['kill-session', '-t', session]);
+    if (!threadId || !managed?.exists) return;
+    if (await waitForNativeGone(threadId, 1_500)) return;
+    await this.releaseNative(threadId);
   }
+
+  /**
+   * Stops only a native Codex TUI whose argv contains the exact target thread.
+   * We deliberately do not use a broad pkill: the bridge must never terminate
+   * an unrelated Codex or control-agent process.
+   */
+  async releaseNative(threadId: string): Promise<NativeReleaseResult> {
+    const pids = await nativeCodexPids(threadId);
+    if (!pids.length) return { matched: false, stopped: false, pids: [] };
+
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGINT');
+      } catch {
+        // The process may have exited between discovery and signalling.
+      }
+    }
+    for (const pid of pids) await waitForExit(pid, 1_500);
+
+    const remaining = pids.filter(isAlive);
+    for (const pid of remaining) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // The process may have exited between the checks.
+      }
+    }
+    for (const pid of remaining) await waitForExit(pid, 1_500);
+    return { matched: true, stopped: pids.every((pid) => !isAlive(pid)), pids };
+  }
+}
+
+async function nativeCodexPids(threadId: string): Promise<number[]> {
+  if (process.platform !== 'linux') return [];
+  const entries = await readdir('/proc').catch(() => [] as string[]);
+  const pids: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (!Number.isSafeInteger(pid) || pid === process.pid) continue;
+    const args = (await readFile(`/proc/${entry}/cmdline`).catch(() => Buffer.from('')))
+      .toString('utf8')
+      .split('\0')
+      .filter(Boolean);
+    const executable = args[0]?.split('/').at(-1) ?? '';
+    const isCodexProcess = ['codex', 'codex.exe'].includes(executable)
+      || args.some((arg) => /(?:^|[/\\])codex(?:\.js|\.mjs)$/.test(arg));
+    if (!isCodexProcess) continue;
+    if (!args.includes('resume') || args.includes('exec') || !args.includes(threadId)) continue;
+    pids.push(pid);
+  }
+  return pids;
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && (error as { code?: string }).code !== 'ESRCH';
+  }
+}
+
+async function waitForExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && isAlive(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function waitForNativeGone(threadId: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await nativeCodexPids(threadId)).length) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return (await nativeCodexPids(threadId)).length === 0;
 }

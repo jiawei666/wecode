@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config.js';
 import { CodexAppServer } from '../src/codex.js';
-import { inferTurnPresentation, SessionManager } from '../src/sessions.js';
+import { inferTurnPresentation, SessionManager, SessionOccupiedError } from '../src/sessions.js';
 import { StateStore } from '../src/state.js';
 import { TmuxManager } from '../src/tmux.js';
 
@@ -99,6 +99,83 @@ test('recreates a stale fresh binding before sending its first turn', async () =
     assert.deepEqual(events, ['turn:stale-thread', 'thread:new', 'turn:new-thread', 'tmux:new-thread']);
     assert.equal(store.getBinding('user')?.threadId, 'new-thread');
     assert.equal(store.getBinding('user')?.hasRollout, true);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('does not bind an occupied native session until explicit takeover retries tmux', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-occupied-session-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  let starts = 0;
+  let releases = 0;
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    resumeThread: async () => ({ id: 'occupied-thread', cwd: directory, status: { type: 'active' } }),
+    listThreads: async () => [{ id: 'occupied-thread', cwd: directory, status: { type: 'active' } }],
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const fakeTmux = {
+    start: async () => {
+      starts += 1;
+      return starts % 2 === 1 ? { ok: false, error: 'thread-store conflict: active writer' } : { ok: true };
+    },
+    releaseNative: async () => {
+      releases += 1;
+      return { matched: true, stopped: true, pids: [1234] };
+    },
+  } as unknown as TmuxManager;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, fakeTmux, async () => undefined);
+
+  try {
+    await assert.rejects(
+      manager.use('user', 'occupied-thread', directory),
+      (error: unknown) => error instanceof SessionOccupiedError && error.running,
+    );
+    assert.equal(store.getBinding('user'), undefined);
+
+    starts = 0;
+    await manager.use('user', 'occupied-thread', directory, {}, true);
+    assert.equal(releases, 1);
+    assert.equal(starts, 2);
+    assert.equal(store.getBinding('user')?.threadId, 'occupied-thread');
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('releases tmux and App Server ownership before a binding is cancelled', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-release-session-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const events: string[] = [];
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    unsubscribe: async (threadId: string) => { events.push(`unsubscribe:${threadId}`); },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const fakeTmux = {
+    interrupt: async () => { events.push('interrupt'); },
+    kill: async (session: string, threadId?: string) => { events.push(`kill:${session}:${threadId}`); },
+  } as unknown as TmuxManager;
+  store.setBinding('user', {
+    threadId: 'release-thread',
+    cwd: directory,
+    tmuxSession: 'codex-release-thread',
+    hasRollout: true,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  });
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, fakeTmux, async () => undefined);
+
+  try {
+    await manager.release('user');
+    assert.deepEqual(events, ['interrupt', 'unsubscribe:release-thread', 'kill:codex-release-thread:release-thread']);
   } finally {
     await manager.close();
     await store.save();

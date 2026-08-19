@@ -25,6 +25,18 @@ export interface SessionStatus {
   attachedClients: number;
 }
 
+export class SessionOccupiedError extends Error {
+  constructor(
+    public readonly threadId: string,
+    public readonly cwd: string,
+    public readonly running: boolean,
+    detail?: string,
+  ) {
+    super(`Codex 会话 ${threadId} 正被原生终端占用${detail ? `：${detail}` : ''}`);
+    this.name = 'SessionOccupiedError';
+  }
+}
+
 export class SessionManager {
   private activeTurns = new Map<string, TurnAccumulator>();
   private readonly unsubscribeNotifications: () => void;
@@ -64,14 +76,23 @@ export class SessionManager {
     threadId: string,
     requestedCwd?: string,
     options: SessionLaunchOptions = {},
+    takeover = false,
   ): Promise<{ binding: SessionBinding; warning?: string }> {
     const previous = this.store.getBinding(userId);
-    const thread = await this.appServer.resumeThread(threadId);
+    const thread = await this.resumeForUse(threadId, requestedCwd, takeover);
     const cwd = await this.validCwd(requestedCwd || (previous?.threadId === threadId ? previous.cwd : thread.cwd || this.config.defaultCwd));
     const inherited = previous?.threadId === threadId ? previous : undefined;
     const binding = this.makeBinding(thread, cwd, inherited, true, options);
+    let tmuxResult = await this.tmux.start(binding.threadId, binding.cwd, binding.tmuxSession, binding);
+    if (!tmuxResult.ok && isNativeConflict(tmuxResult.error)) {
+      if (!takeover) throw new SessionOccupiedError(threadId, cwd, threadIsRunning(thread), tmuxResult.error);
+      await this.releaseNativeOrThrow(threadId);
+      tmuxResult = await this.tmux.start(binding.threadId, binding.cwd, binding.tmuxSession, binding);
+      if (!tmuxResult.ok && isNativeConflict(tmuxResult.error)) {
+        throw new SessionOccupiedError(threadId, cwd, threadIsRunning(thread), tmuxResult.error);
+      }
+    }
     this.bind(userId, binding);
-    const tmuxResult = await this.tmux.start(binding.threadId, binding.cwd, binding.tmuxSession, binding);
     return tmuxResult.ok ? { binding } : { binding, warning: tmuxResult.error };
   }
 
@@ -155,6 +176,15 @@ export class SessionManager {
     return false;
   }
 
+  async release(userId: string): Promise<boolean> {
+    const binding = this.store.getBinding(userId);
+    if (!binding) return false;
+    await this.stop(userId);
+    await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
+    await this.tmux.kill(binding.tmuxSession, binding.threadId).catch(() => undefined);
+    return true;
+  }
+
   async raw(userId: string, text: string): Promise<void> {
     const binding = this.store.getBinding(userId);
     if (!binding) throw new Error('没有当前 Codex 会话');
@@ -186,7 +216,7 @@ export class SessionManager {
       ? undefined
       : await this.appServer.resumeThread(binding.threadId).catch(() => undefined);
     const tmux = await this.tmux.status(binding.tmuxSession);
-    const nativeRunning = thread?.status?.type === 'active' || Boolean(thread?.status?.activeFlags?.length);
+    const nativeRunning = threadIsRunning(thread);
     return {
       binding,
       running: nativeRunning || [...this.activeTurns.values()].some((turn) => turn.threadId === binding.threadId),
@@ -203,7 +233,7 @@ export class SessionManager {
       if ([...this.activeTurns.values()].some((turn) => turn.threadId === binding.threadId)) continue;
       const tmux = await this.tmux.status(binding.tmuxSession);
       if (!tmux.exists || tmux.attachedClients > 0) continue;
-      await this.tmux.kill(binding.tmuxSession).catch(() => undefined);
+      await this.tmux.kill(binding.tmuxSession, binding.threadId).catch(() => undefined);
       await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
     }
   }
@@ -331,6 +361,43 @@ export class SessionManager {
     if (!info?.isDirectory()) throw new Error(`项目目录不存在或不是目录: ${cwd}`);
     return cwd;
   }
+
+  private async resumeForUse(threadId: string, requestedCwd: string | undefined, takeover: boolean): Promise<ThreadSummary> {
+    try {
+      return await this.appServer.resumeThread(threadId);
+    } catch (error) {
+      if (!isNativeConflict(error)) throw error;
+      if (!takeover) throw await this.occupiedError(threadId, requestedCwd, error);
+      await this.releaseNativeOrThrow(threadId);
+      try {
+        return await this.appServer.resumeThread(threadId);
+      } catch (retryError) {
+        if (isNativeConflict(retryError)) throw await this.occupiedError(threadId, requestedCwd, retryError);
+        throw retryError;
+      }
+    }
+  }
+
+  private async occupiedError(threadId: string, requestedCwd: string | undefined, cause: unknown): Promise<SessionOccupiedError> {
+    let thread: ThreadSummary | undefined;
+    try {
+      thread = await this.appServer.listThreads().then((threads) => threads.find((candidate) => candidate.id === threadId));
+    } catch {
+      // The conflict itself is enough to preserve the binding and ask first.
+    }
+    return new SessionOccupiedError(
+      threadId,
+      requestedCwd || thread?.cwd || this.config.defaultCwd,
+      threadIsRunning(thread),
+      errorText(cause),
+    );
+  }
+
+  private async releaseNativeOrThrow(threadId: string): Promise<void> {
+    const result = await this.tmux.releaseNative(threadId);
+    if (!result.matched) throw new Error(`未找到可安全停止的原生终端（thread_id=${threadId}），请先在原生终端退出该会话后再重试`);
+    if (!result.stopped) throw new Error(`原生终端未能释放（thread_id=${threadId}），请先手动关闭该终端后再重试`);
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -339,6 +406,18 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
+}
+
+function threadIsRunning(thread?: ThreadSummary): boolean {
+  return ['active', 'running', 'in_progress'].includes(thread?.status?.type ?? '') || Boolean(thread?.status?.activeFlags?.length);
+}
+
+function isNativeConflict(error: unknown): boolean {
+  return /thread-store conflict|active writer|already in use|being used|occupied|原生终端/i.test(errorText(error));
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function inferTurnPresentation(text: string): { kind: 'report'; presentation: 'page' } | undefined {

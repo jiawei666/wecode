@@ -8,7 +8,6 @@ import type { AppConfig } from './config.js';
 import type { PresentationMode } from './model.js';
 
 const ANSI_ESCAPE = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)]+)\)/g;
 
 export interface RenderInput {
   text: string;
@@ -35,11 +34,6 @@ export type RenderedResponse = RenderedText | RenderedPage;
 export function normalizeWechatText(input: string): string {
   return input
     .replace(ANSI_ESCAPE, '')
-    .replace(MARKDOWN_LINK, '$1 ($2)')
-    .replace(/^#{1,6}\s+(.+)$/gm, '【$1】')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/^[ \t]*>[ \t]?/gm, '│ ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

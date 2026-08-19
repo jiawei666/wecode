@@ -24,6 +24,14 @@ export interface ControlState {
   sessionId?: string;
   startedAt: number;
   lastActivityAt: number;
+  executionFeedback?: string;
+  pendingTakeover?: PendingTakeover;
+}
+
+export interface PendingTakeover {
+  threadId: string;
+  cwd: string;
+  running: boolean;
 }
 
 export interface SessionSelectionItem extends SessionLaunchOptions {
@@ -72,11 +80,13 @@ export interface ActionResponse {
   cli?: CliKind;
   cwd?: string;
   thread_id?: string;
+  limit?: number;
   text?: string;
   title?: string;
   model?: string;
   reasoning_effort?: string;
   fast?: boolean;
+  takeover?: boolean;
   note?: string;
   presentation?: PresentationMode;
   reason?: string;
@@ -98,8 +108,8 @@ export interface ThreadSummary {
   name?: string;
   preview?: string;
   cwd?: string;
-  createdAt?: number;
-  updatedAt?: number;
+  createdAt?: number | string;
+  updatedAt?: number | string;
   model?: string;
   reasoningEffort?: string;
   serviceTier?: string | null;

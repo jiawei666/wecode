@@ -101,7 +101,7 @@ function normalizeThreadId(value: string): string {
 export const HELP_TEXT = `微信 Codex 命令：
 /ctrl [内容]    进入/继续控制 Agent
 /new [目录]     新建会话；可带 --model/-m、--fast、--no-fast
-/use [ID]       切换会话；支持会话列表序号或完整 ID
+/use [序号]      切换会话；也可用 /ctrl 通过自然语言查找
 /sessions       最近会话；可用 here/all/full
 /stat           查看状态
 /stop           中断当前任务
