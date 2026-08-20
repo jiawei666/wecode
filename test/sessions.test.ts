@@ -7,14 +7,13 @@ import { loadConfig } from '../src/config.js';
 import { CodexAppServer } from '../src/codex.js';
 import { inferTurnPresentation, SessionManager, SessionOccupiedError } from '../src/sessions.js';
 import { StateStore } from '../src/state.js';
-import { TmuxManager } from '../src/tmux.js';
 
 test('infers a share page for repository report requests', () => {
   assert.deepEqual(inferTurnPresentation('请分析这个仓库代码并生成总结报告'), { kind: 'report', presentation: 'page' });
   assert.equal(inferTurnPresentation('你现在是什么模型'), undefined);
 });
 
-test('starts a fresh thread turn before attaching tmux or resuming it', async () => {
+test('starts a fresh thread turn through the App Server', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-'));
   const events: string[] = [];
   const fakeAppServer = {
@@ -33,21 +32,45 @@ test('starts a fresh thread turn before attaching tmux or resuming it', async ()
     },
     close: async () => undefined,
   } as unknown as CodexAppServer;
-  const fakeTmux = {
-    start: async () => {
-      events.push('tmux');
-      return { ok: true };
-    },
-  } as unknown as TmuxManager;
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
-  const manager = new SessionManager(loadConfig(), store, fakeAppServer, fakeTmux, async () => undefined);
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
 
   try {
     await manager.create('user');
     assert.deepEqual(events, ['thread']);
     await manager.send('user', '你现在是什么模型');
-    assert.deepEqual(events, ['thread', 'turn', 'tmux']);
+    assert.deepEqual(events, ['thread', 'turn']);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('steers the active turn through the App Server', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-steer-'));
+  const events: string[] = [];
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    startThread: async () => ({ id: 'steer-thread' }),
+    startTurn: async () => 'turn-1',
+    steerTurn: async (threadId: string, turnId: string, text: string) => {
+      events.push(`${threadId}|${turnId}|${text}`);
+      return turnId;
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    await manager.create('user');
+    await manager.send('user', '先开始');
+    const result = await manager.steer('user', '补充要求');
+    assert.equal(result.accepted, true);
+    assert.deepEqual(events, ['steer-thread|turn-1|补充要求']);
   } finally {
     await manager.close();
     await store.save();
@@ -75,28 +98,21 @@ test('recreates a stale fresh binding before sending its first turn', async () =
     },
     close: async () => undefined,
   } as unknown as CodexAppServer;
-  const fakeTmux = {
-    start: async (threadId: string) => {
-      events.push(`tmux:${threadId}`);
-      return { ok: true };
-    },
-  } as unknown as TmuxManager;
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   store.setBinding('user', {
     threadId: 'stale-thread',
     cwd: directory,
-    tmuxSession: 'codex-stale-thread',
     hasRollout: false,
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
   });
-  const manager = new SessionManager(loadConfig(), store, fakeAppServer, fakeTmux, async () => undefined);
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
 
   try {
     const result = await manager.send('user', '你好');
     assert.equal(result.accepted, true);
-    assert.deepEqual(events, ['turn:stale-thread', 'thread:new', 'turn:new-thread', 'tmux:new-thread']);
+    assert.deepEqual(events, ['turn:stale-thread', 'thread:new', 'turn:new-thread']);
     assert.equal(store.getBinding('user')?.threadId, 'new-thread');
     assert.equal(store.getBinding('user')?.hasRollout, true);
   } finally {
@@ -106,41 +122,67 @@ test('recreates a stale fresh binding before sending its first turn', async () =
   }
 });
 
-test('does not bind an occupied native session until explicit takeover retries tmux', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-occupied-session-'));
+test('does not bind a session occupied by another Codex client', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-conflict-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
-  let starts = 0;
-  let releases = 0;
+  let resumes = 0;
   const fakeAppServer = {
     onNotification: () => () => undefined,
-    resumeThread: async () => ({ id: 'occupied-thread', cwd: directory, status: { type: 'active' } }),
-    listThreads: async () => [{ id: 'occupied-thread', cwd: directory, status: { type: 'active' } }],
+    resumeThread: async () => {
+      resumes += 1;
+      throw new Error('thread-store conflict: active writer');
+    },
     close: async () => undefined,
   } as unknown as CodexAppServer;
-  const fakeTmux = {
-    start: async () => {
-      starts += 1;
-      return starts % 2 === 1 ? { ok: false, error: 'thread-store conflict: active writer' } : { ok: true };
-    },
-    releaseNative: async () => {
-      releases += 1;
-      return { matched: true, stopped: true, pids: [1234] };
-    },
-  } as unknown as TmuxManager;
-  const manager = new SessionManager(loadConfig(), store, fakeAppServer, fakeTmux, async () => undefined);
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
 
   try {
     await assert.rejects(
       manager.use('user', 'occupied-thread', directory),
-      (error: unknown) => error instanceof SessionOccupiedError && error.running,
+      (error: unknown) => error instanceof SessionOccupiedError && /其他 Codex 客户端/.test(error.message),
     );
+    assert.equal(resumes, 1);
     assert.equal(store.getBinding('user'), undefined);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-    starts = 0;
-    await manager.use('user', 'occupied-thread', directory, {}, true);
-    assert.equal(releases, 1);
-    assert.equal(starts, 2);
+test('safely interrupts an active external turn before resuming its session', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-takeover-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  let resumeCalls = 0;
+  let readCalls = 0;
+  let interrupted: { threadId: string; turnId: string } | undefined;
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    resumeThread: async () => {
+      resumeCalls += 1;
+      return { id: 'occupied-thread', cwd: directory, status: { type: 'idle' } };
+    },
+    readThread: async () => {
+      readCalls += 1;
+      return readCalls === 1
+        ? { id: 'occupied-thread', cwd: directory, status: { type: 'active' }, turns: [{ id: 'turn-1', status: 'inProgress' }] }
+        : { id: 'occupied-thread', cwd: directory, status: { type: 'idle' }, turns: [] };
+    },
+    interrupt: async (threadId: string, turnId: string) => {
+      interrupted = { threadId, turnId };
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    const result = await manager.use('user', 'occupied-thread', directory, {}, true);
+    assert.equal(result.binding.threadId, 'occupied-thread');
+    assert.deepEqual(interrupted, { threadId: 'occupied-thread', turnId: 'turn-1' });
+    assert.equal(resumeCalls, 1);
+    assert.equal(readCalls, 2);
     assert.equal(store.getBinding('user')?.threadId, 'occupied-thread');
   } finally {
     await manager.close();
@@ -149,7 +191,7 @@ test('does not bind an occupied native session until explicit takeover retries t
   }
 });
 
-test('releases tmux and App Server ownership before a binding is cancelled', async () => {
+test('releases App Server ownership before a binding is cancelled', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-release-session-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
@@ -159,23 +201,18 @@ test('releases tmux and App Server ownership before a binding is cancelled', asy
     unsubscribe: async (threadId: string) => { events.push(`unsubscribe:${threadId}`); },
     close: async () => undefined,
   } as unknown as CodexAppServer;
-  const fakeTmux = {
-    interrupt: async () => { events.push('interrupt'); },
-    kill: async (session: string, threadId?: string) => { events.push(`kill:${session}:${threadId}`); },
-  } as unknown as TmuxManager;
   store.setBinding('user', {
     threadId: 'release-thread',
     cwd: directory,
-    tmuxSession: 'codex-release-thread',
     hasRollout: true,
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
   });
-  const manager = new SessionManager(loadConfig(), store, fakeAppServer, fakeTmux, async () => undefined);
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
 
   try {
     await manager.release('user');
-    assert.deepEqual(events, ['interrupt', 'unsubscribe:release-thread', 'kill:codex-release-thread:release-thread']);
+    assert.deepEqual(events, ['unsubscribe:release-thread']);
   } finally {
     await manager.close();
     await store.save();

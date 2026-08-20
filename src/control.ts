@@ -23,11 +23,10 @@ function controlInstructions(homeDir: string, searchRoots: string[]): string {
 
 可用 action：
 - new_session：用户明确要新建会话时使用，需要已验证的 cwd；可选 model/reasoning_effort/fast
-- switch_session：用户明确要切换已有会话时使用，需要 catalog 中真实存在的 thread_id；可选 cwd/model/reasoning_effort/fast/takeover
+- switch_session：用户明确要切换已有会话时使用，需要 catalog 中真实存在的 thread_id；可选 cwd/model/reasoning_effort/fast。只有桥接层已经记录待确认目标，且用户明确回复“确认接管”后，才允许 takeover=true
 - list_sessions：列出历史会话，需要已验证的 cwd、limit 和面向用户的 Markdown text
 - status：查看当前绑定和运行状态
 - interrupt：中断当前 Codex 任务
-- raw_input：将 text 原样发送给当前 tmux TUI
 - set_note：为当前会话设置本地备注，text 为备注内容
 - ask：信息不足、目录有多个候选或需要用户确认时使用，需要 text
 - reply：仅作解释性回复，不代表绑定完成；需要 text
@@ -39,9 +38,10 @@ function controlInstructions(homeDir: string, searchRoots: string[]): string {
 4. list_sessions 的 text 会被桥接层原样发送给用户。必须由你自己完成筛选、按最新更新时间排序和数量截取，格式使用 Markdown：每条只展示序号、cwd 的最后一级完整目录名、摘要和本地绝对时间（YYYY-MM-DD HH:mm）；不要展示模型、normal、service tier、完整路径或 thread_id。摘要优先使用本地备注、原生名称、preview，没有时写“未命名会话”。
 5. 你可以在内部使用 catalog 中的真实 thread_id，但绝不把 ID 展示给用户。用户后续说“第 2 个”“刚才那个”“最上面那个”时，必须根据你上一轮生成的列表和原始 catalog 映射到准确 thread_id，不能重新猜顺序。
 6. 用户在刚刚确认过唯一目录后说“新建一个”，直接复用该目录；没有已确认目录或仍有歧义时 ask，不要猜。
-7. list_sessions、status、ask、reply、interrupt、raw_input、set_note 都不代表绑定完成，控制对话继续；只有 new_session 或 switch_session 成功执行后桥接层才会退出控制层。
-8. 如果桥接层提供了待确认接管信息，只有用户明确同意停止原生终端并改用 tmux 时，switch_session 才能设置 takeover=true；用户拒绝时不要执行接管。
-9. 如果桥接层反馈上一次 action 执行失败，要基于失败原因继续和用户对话，不要假装成功。
+7. 如果上下文提供了“上一个绑定”，用户说“返回上一个”时直接返回 switch_session，不要重新猜目录或会话。
+8. list_sessions、status、ask、reply、interrupt、set_note 都不代表绑定完成，控制对话继续；只有 new_session 或 switch_session 成功执行后桥接层才会退出控制层。
+9. 如果目标 Codex 会话被其他 Codex 客户端占用，桥接层会先向用户提供一次安全接管确认；在用户明确回复“确认接管”前，不得输出 takeover=true，也不要反复重试。用户已经明确要求切换时，即使 catalog 显示 active，也先返回普通 switch_session，让桥接层判断并发起确认，不要仅凭 catalog 状态拒绝。安全接管只通过 App Server 中断活动 turn、等待空闲并恢复，不会杀掉外部客户端。
+10. 如果桥接层反馈上一次 action 执行失败，要基于失败原因继续和用户对话，不要假装成功。
 
 如果用户只是想在已绑定目标会话中做项目开发，说明当前控制流程需要先完成或取消会话管理，不要用 reply 假装已经执行开发任务。`;
 }
@@ -241,7 +241,6 @@ function isActionResponse(value: ActionResponse): value is ActionResponse {
     'list_sessions',
     'status',
     'interrupt',
-    'raw_input',
     'set_note',
     'reply',
     'ask',
@@ -250,7 +249,7 @@ function isActionResponse(value: ActionResponse): value is ActionResponse {
   if (value.takeover !== undefined && value.takeover !== null && typeof value.takeover !== 'boolean') return false;
   if (value.action === 'new_session') return typeof value.cwd === 'string' && value.cwd.trim().length > 0;
   if (value.action === 'switch_session') return typeof value.thread_id === 'string' && value.thread_id.trim().length > 0;
-  if (value.action === 'raw_input' || value.action === 'set_note' || value.action === 'reply' || value.action === 'ask') {
+  if (value.action === 'set_note' || value.action === 'reply' || value.action === 'ask') {
     return typeof value.text === 'string' && value.text.trim().length > 0;
   }
   if (value.action === 'list_sessions') {

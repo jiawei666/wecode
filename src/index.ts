@@ -1,12 +1,12 @@
 import 'dotenv/config';
 import { mkdir } from 'node:fs/promises';
+import { STARTUP_HINT } from './commands.js';
 import { loadConfig } from './config.js';
 import { BridgeApp } from './bridge.js';
 import { CodexAppServer } from './codex.js';
 import { loginWithQr, IlinkClient } from './ilink.js';
 import { SessionManager } from './sessions.js';
 import { StateStore } from './state.js';
-import { TmuxManager } from './tmux.js';
 
 async function main(): Promise<void> {
   const command = process.argv[2] || 'run';
@@ -41,9 +41,8 @@ async function main(): Promise<void> {
   const token = store.get().token;
   const ilink = new IlinkClient({ ...config, apiBase: store.get().baseUrl || config.apiBase }, token);
   const appServer = new CodexAppServer(config);
-  const tmux = new TmuxManager(config);
   let bridge: BridgeApp | undefined;
-  const sessions = new SessionManager(config, store, appServer, tmux, async (result) => {
+  const sessions = new SessionManager(config, store, appServer, async (result) => {
     if (bridge) await bridge.onTurn(result);
   });
   bridge = new BridgeApp(config, store, ilink, sessions);
@@ -59,7 +58,7 @@ async function main(): Promise<void> {
 
   const reapTimer = setInterval(() => void sessions.reapIdle(), 60_000);
   reapTimer.unref();
-  process.stdout.write(`wecode 已启动，监听 ${store.get().scannedUser || '绑定微信用户'}\n`);
+  process.stdout.write(`wecode 已启动，监听 ${store.get().scannedUser || '绑定微信用户'}\n${STARTUP_HINT}\n`);
 
   let backoff = 1000;
   while (!stopping) {

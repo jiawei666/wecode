@@ -5,7 +5,7 @@
 
 ## 结论摘要
 
-wecode 是一个独立的 Node.js/TypeScript 桥接服务，通过微信 iLink 控制本机 Codex 交互会话。当前已经打通了“微信长轮询 → 消息路由 → 控制 Agent 或 Codex App Server → tmux TUI/微信回复 → 长报告分享页”的第一版纵向链路，代码规模适中，模块边界清楚，自动化校验通过。
+wecode 是一个独立的 Node.js/TypeScript 桥接服务，通过微信 iLink 控制本机 Codex 交互会话。当前已经打通了“微信长轮询 → 消息路由 → 控制 Agent 或 Codex App Server → 微信回复 → 长报告分享页”的第一版纵向链路，代码规模适中，模块边界清楚，自动化校验通过。
 
 项目目前适合个人本机工具或受控内测，不适合直接作为多用户或公网生产服务。最重要的原因是：
 
@@ -21,8 +21,8 @@ wecode 是一个独立的 Node.js/TypeScript 桥接服务，通过微信 iLink �
 
 - README、环境变量示例、package.json、tsconfig.json 和 lockfile。
 - src/ 下 12 个 TypeScript 源文件。
-- test/ 下 7 个测试文件，共 21 个测试用例。
-- 控制 Agent 的 JSON Schema、tmux 启动脚本和 cloudflared 调用配置。
+- test/ 下 7 个测试文件，共 34 个测试用例。
+- 控制 Agent 的 JSON Schema 和 cloudflared 调用配置。
 - 当前已有的 PROJECT_SUMMARY.md 与 docs/project-summary-research.md，并以当前源码和实际命令结果为准重新核验。
 
 仓库根目录不是 Git 工作树，也不存在 .codegraph/，因此本报告不包含提交历史、分支差异、变更归属或 CodeGraph 调用图分析。未执行真实微信 QR 登录、真实 iLink 联调、公网 Cloudflare Tunnel 访问或真实 Codex 工作流；这些部分的结论来自源码审查和模拟测试。
@@ -36,7 +36,6 @@ README 将项目定位为“通过微信 iLink 控制本地 Codex 交互会话�
 | 运行时 | Node.js >=22、ESM、TypeScript strict 模式，启用 noUncheckedIndexedAccess | [package.json](package.json)、[tsconfig.json](tsconfig.json) |
 | 微信协议 | HTTP 长轮询 getupdates，sendmessage 回复，二维码登录，context token 续用 | [src/ilink.ts](src/ilink.ts) |
 | Codex 协议 | 本机 WebSocket JSON-RPC App Server，共享原生 thread | [src/codex.ts](src/codex.ts) |
-| 本地 TUI | tmux + codex resume，通过 bin/tmux-codex 启动 detached 会话 | [src/tmux.ts](src/tmux.ts)、[bin/tmux-codex](bin/tmux-codex) |
 | 状态 | .data/state.json，原子替换写入，文件权限尽力设为 0600 | [src/state.ts#L61](src/state.ts#L61)、[src/state.ts#L112](src/state.ts#L112) |
 | 长内容 | 本地 127.0.0.1 Markdown 页面，使用自定义公网地址或 Cloudflare Quick Tunnel | [src/render.ts#L287](src/render.ts#L287) |
 | 依赖 | dotenv、marked、qrcode、ws；无 Web 框架、无数据库 | [package.json](package.json) |
@@ -58,30 +57,30 @@ README 将项目定位为“通过微信 iLink 控制本地 Codex 交互会话�
                          CodexAppServer / WebSocket
                                    │
                          Codex 原生 thread
-                            ┌──────┴──────┐
-                            ▼             ▼
-                       微信回复      tmux-codex TUI
+                                   │
+                                   ▼
+                              微信回复
                             │
                             ▼
                      PagePublisher 分享页
 
 ### 启动与登录
 
-src/index.ts 根据命令执行 login 或 run。login 通过二维码取得 bot token、bot ID、服务地址和扫码用户，并写入状态文件；run 要求已有 token 和 bot ID，然后创建 iLink 客户端、Codex App Server、tmux 管理器、会话管理器和桥接层。
+src/index.ts 根据命令执行 login 或 run。login 通过二维码取得 bot token、bot ID、服务地址和扫码用户，并写入状态文件；run 要求已有 token 和 bot ID，然后创建 iLink 客户端、Codex App Server、会话管理器和桥接层。
 
 ### 消息路由
 
-BridgeApp 先检查允许用户、保存 context token、进行消息去重，再按顺序处理 /ctrl、/stop、/cancel、其他命令和普通文本，见 [src/bridge.ts#L41](src/bridge.ts#L41)。没有当前 thread 绑定时，普通文本进入控制 Agent；有绑定时，普通文本直接发送到目标 Codex thread。
+BridgeApp 先检查允许用户、保存 context token、进行消息去重，再按顺序处理菜单/高置信度中文短词、“控制：……”、/ctrl、斜杠兜底命令和普通文本，见 [src/bridge.ts#L41](src/bridge.ts#L41)。菜单与会话列表的序号绑定短期用户状态；有绑定时，执行中的普通消息优先通过 App Server steer 当前 turn，无法 steer 时进入 FIFO 队列并在完成后自动续接；没有当前 thread 绑定时，普通文本进入控制 Agent。
 
-### 会话与本地 TUI
+### 会话与 App Server
 
-SessionManager 负责创建、恢复、列出 thread、启动/中断 turn、订阅通知并聚合最终文本；TmuxManager 负责 detached TUI 的启动、状态检查、Ctrl-C、原始输入和回收。Codex 原生 thread 是会话真相，桥接层只保存用户到 thread 的绑定，见 [src/sessions.ts](src/sessions.ts)。
+SessionManager 负责创建、恢复、列出 thread、启动/中断 turn、订阅通知并聚合最终文本。Codex 原生 thread 是会话真相，桥接层只保存用户到 thread 的绑定，见 [src/sessions.ts](src/sessions.ts)。
 
-新 thread 在首条 turn 之前标记为 hasRollout=false，因此不会立即执行 codex resume；首条消息成功启动后才挂载 tmux。这是对 Codex 新 thread 生命周期的针对性处理。
+新 thread 在首条 turn 之前标记为 hasRollout=false；首条消息成功启动后将绑定标记为已产生 rollout。这是对 Codex 新 thread 生命周期的针对性处理。
 
 ### 控制 Agent
 
-ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_session、switch_session、list_sessions、status、interrupt、raw_input、reply 或 ask 等结构化 action，schema 位于 [schemas/control-action.json](schemas/control-action.json)，解析和字段校验位于 [src/control.ts](src/control.ts)。
+ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_session、switch_session、list_sessions、status、interrupt、set_note、reply 或 ask 等结构化 action，schema 位于 [schemas/control-action.json](schemas/control-action.json)，解析和字段校验位于 [src/control.ts](src/control.ts)。
 
 ### 长报告分享
 
@@ -92,11 +91,11 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 已实现：
 
 - 微信二维码登录、iLink 长轮询、context token 保存、消息去重和文本分片。
-- /ctrl、/new、/use、/sessions、/stat、/stop、/cancel、/raw、/help 命令。
+- `菜单`、`新建`、`切换`、`会话`、`状态`、`返回`、`停止`、`取消` 等高置信度中文短词和菜单序号由桥接层本地执行；/ctrl 作为自然语言控制入口；/new、/use、/sessions、/stat、/back、/stop、/cancel、/help 及中文斜杠别名保留为不依赖控制 Agent 的故障兜底命令。
 - Codex thread 创建、恢复、列出、turn 启动和中断。
-- 微信消息与本地 tmux TUI 共享同一个 Codex App Server endpoint。
+- wecode 通过 Codex App Server 管理原生 thread，其他 Codex 客户端可独立连接同一服务；发生占用冲突时，只有用户明确确认后才会通过 App Server 请求中断活动 turn 并尝试恢复，不通过操作系统级别杀进程。
 - turn 通知聚合：普通文本、plan、diff、report 等展示类型。
-- 状态原子写入、最多保留 500 条去重记录、空闲 tmux 回收。
+- 状态原子写入、最多保留 500 条去重记录、空闲 App Server 订阅回收。
 - Markdown 转微信纯文本，按段落和代码块切分，并使用 Unicode 安全长度计算。
 - 长报告自动转分享页；引用当前工作目录内的 Markdown 文件时，可将文件正文嵌入分享页。
 - 分享页对原始 HTML 做转义，对链接和图片协议做 allowlist 过滤。当前测试确认 script 标签会被转义，javascript: 链接不会生成 href，见 [src/render.ts#L134](src/render.ts#L134) 和 [test/render.test.ts#L74](test/render.test.ts#L74)。
@@ -105,29 +104,28 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 
 - 图片、文件、视频和无文字语音目前只保留附件元数据并提示“当前版本先处理文字消息”，不会下载、解密或交给 Codex，见 [src/ilink.ts#L145](src/ilink.ts#L145)。
 - typing endpoint 仍为空实现。
-- 没有真实 iLink、Codex App Server、tmux、cloudflared 的端到端测试。
+- 没有真实 iLink、Codex App Server、cloudflared 的端到端测试。
 - 当前设计按单机、少用户场景组织，没有租户隔离、配额、速率限制或多实例协调。
 
 ## 5. 本地验证结果
 
 | 检查项 | 结果 |
 | --- | --- |
-| npm test | 通过，21/21 |
+| npm test | 通过，34/34 |
 | npm run lint | 通过；脚本实际执行 tsc -p tsconfig.json --noEmit，并非 ESLint |
 | npm run build | 通过，生成 dist/ |
-| bash -n bin/tmux-codex | 通过 |
 | Node.js | 当前环境 v24.14.0，满足 package.json 的 >=22 要求 |
 | npm ls --depth=0 | 通过，依赖树无缺失 |
 | 页面安全探针 | 通过，原始 HTML 转义、javascript: 链接过滤 |
 
-现有测试重点覆盖命令解析、控制 action、状态快速连续写入、Markdown 清洗与分片、报告识别、Codex sandbox 参数、新 thread 首次发送和 stale fresh binding 重建。测试主要使用 fake App Server、fake Tmux 和本地 WebSocket/HTTP server，未覆盖 BridgeApp 的完整路由，也未覆盖真实微信协议。
+现有测试重点覆盖命令解析、控制 action、状态快速连续写入、Markdown 清洗与分片、报告识别、Codex sandbox 参数、新 thread 首次发送和 stale fresh binding 重建。测试主要使用 fake App Server 和本地 WebSocket/HTTP server，未覆盖 BridgeApp 的完整路由，也未覆盖真实微信协议。
 
 ## 6. 优点与工程质量评价
 
-1. 模块职责清楚。iLink、桥接路由、控制 Agent、Codex RPC、会话、tmux、状态和渲染分别位于独立模块，后续替换外部适配器的成本较低。
+1. 模块职责清楚。iLink、桥接路由、控制 Agent、Codex RPC、会话、状态和渲染分别位于独立模块，后续替换外部适配器的成本较低。
 2. 类型约束较好。项目启用 strict、noUncheckedIndexedAccess，并对控制 action 使用 JSON Schema 与运行时字段校验。
 3. 本地状态写入考虑了崩溃一致性。状态先写临时文件再 rename，并对最终文件执行 0600 权限设置。
-4. 子进程调用普遍使用参数数组和 shell=false；tmux 原始输入也通过 send-keys -l 传递，没有发现把用户文本直接拼接进 shell 命令的路径。
+4. 子进程调用普遍使用参数数组和 shell=false，没有发现把用户文本直接拼接进 shell 命令的路径。
 5. 微信输出体验有针对性设计。文本分片考虑段落、代码围栏和 Unicode，报告类输出有独立的手机阅读页面。
 6. 当前页面渲染已经补上原始 HTML 和危险 URL 的基本防护，安全基线比旧版更好。
 
@@ -137,7 +135,7 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 
 | 优先级 | 问题 | 影响与证据 | 建议 |
 | --- | --- | --- | --- |
-| 高 | Codex 默认完全放权 | ControlAgent 使用 dangerously-bypass-approvals-and-sandbox；thread/start、thread/resume、turn/start 和 tmux wrapper 均使用 never/full-access，见 [src/control.ts#L43](src/control.ts#L43)、[src/codex.ts#L186](src/codex.ts#L186)、[bin/tmux-codex#L35](bin/tmux-codex#L35)。一旦远程消息被接受，Codex 可修改本机文件、执行命令和访问其运行用户可见的数据。 | 默认改为沙箱和审批；如必须全权限，使用专用低权限 OS 用户、显式 opt-in，并限制工作目录。 |
+| 高 | Codex 默认完全放权 | ControlAgent 使用 dangerously-bypass-approvals-and-sandbox；thread/start、thread/resume、turn/start 均使用 never/full-access，见 [src/control.ts#L43](src/control.ts#L43)、[src/codex.ts#L186](src/codex.ts#L186)。一旦远程消息被接受，Codex 可修改本机文件、执行命令和访问其运行用户可见的数据。 | 默认改为沙箱和审批；如必须全权限，使用专用低权限 OS 用户、显式 opt-in，并限制工作目录。 |
 | 高 | 审批请求仍会被自动接受 | 即使未来把 Codex 改回需要审批，JsonRpcConnection 对 requestApproval 仍直接返回 decision=accept，见 [src/codex.ts#L133](src/codex.ts#L133)。这会让“启用审批”形同虚设。 | 删除自动 accept，改为明确拒绝或接入真正的人工/策略审批通道；安全配置变更后增加验证测试。 |
 | 高 | 访问控制 fail-open | 过滤条件是 allowedUser || scannedUser；两者都为空时不会拒绝任何发送者，见 [src/bridge.ts#L43](src/bridge.ts#L43)。二维码接口没有返回用户 ID 时尤其明显。 | 启动或处理消息前强制要求显式白名单；两项都为空时拒绝运行，并允许多个明确的 allowlist 用户。 |
 | 高 | 工作目录没有安全边界 | validCwd 只检查路径存在且为目录，未限制在 WECHATBOT_HOME 或配置的项目根目录下，见 [src/sessions.ts#L254](src/sessions.ts#L254)。控制 Agent 或用户可把会话指向任意本机目录。 | 对 realpath 后的目录做 allowlist，拒绝根目录、敏感目录和越界 symlink；必要时只允许预注册项目。 |
@@ -171,7 +169,7 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 2. 为 WebSocket 增加断线清理、重连和 thread 重订阅。
 3. 监控 cloudflared 生命周期，失效时重建隧道；避免并发首次初始化。
 4. 统一退出流程并等待 state save。
-5. 明确 App Server 的进程所有权，避免 tmux wrapper 启动的后台进程长期遗留。
+5. 明确 App Server 的进程所有权，避免由 wecode 启动的后台进程长期遗留。
 6. 调整 cursor 提交时机，确保消息处理成功后再推进游标；清理控制 Agent 的临时文件。
 
 ### 第三阶段：补齐工程化
@@ -185,6 +183,6 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 
 ## 最终判断
 
-项目的核心设计方向成立：以 Codex 原生 thread 作为会话真相，以轻量状态保存微信用户绑定，以 App Server 连接同时支撑微信和本地 tmux 入口，再用报告页承载长内容。当前源码和 21 个自动化测试足以支撑个人环境试用。
+项目的核心设计方向成立：以 Codex 原生 thread 作为会话真相，以轻量状态保存微信用户绑定，以 App Server 连接支撑微信入口，再用报告页承载长内容。当前源码和自动化测试足以支撑个人环境试用。
 
-在扩大使用范围前，应优先处理“远程输入驱动本机完全权限执行”“访问控制 fail-open”“任意工作目录”这三个安全边界问题，然后修复 stale thread 回执丢失和 WebSocket 断线恢复。修复这些问题后，再投入真实微信、Codex、tmux 和 Tunnel 环境的端到端验证，项目才具备更稳妥的内测基础。
+在扩大使用范围前，应优先处理“远程输入驱动本机完全权限执行”“访问控制 fail-open”“任意工作目录”这三个安全边界问题，然后修复 stale thread 回执丢失和 WebSocket 断线恢复。修复这些问题后，再投入真实微信、Codex 和 Tunnel 环境的端到端验证，项目才具备更稳妥的内测基础。

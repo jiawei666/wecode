@@ -12,7 +12,6 @@
         "list_sessions",
         "status",
         "interrupt",
-        "raw_input",
         "set_note",
         "reply",
         "ask"

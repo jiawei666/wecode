@@ -2,11 +2,6 @@ import path from 'node:path';
 import type { AppConfig } from './config.js';
 import type { SessionBinding, SessionSelectionItem, ThreadSummary } from './model.js';
 
-export interface DisplaySession extends ThreadSummary {
-  note?: string;
-  fast?: boolean;
-}
-
 export interface SessionListResult {
   text: string;
   items: SessionSelectionItem[];
@@ -61,11 +56,12 @@ export function buildSessionList(
     const title = truncate(note || thread.preview || '未命名会话', 60);
     const project = thread.cwd ? path.basename(thread.cwd) || '未知目录' : '未知目录';
     const currentMark = thread.id === current?.threadId ? ' · 当前' : '';
-    return `${index + 1}. ${project}${currentMark}\n   ${title} · ${formatTimestamp(thread.updatedAt ?? thread.createdAt)}`;
+    const id = options.fullIds ? `\n   ID：${thread.id}` : '';
+    return `${index + 1}. ${project}${currentMark}\n   ${title} · ${formatTimestamp(thread.updatedAt ?? thread.createdAt)}${id}`;
   });
   const scope = visible.length < merged.length ? `最近 ${visible.length}/${merged.length}` : `${visible.length}`;
   return {
-    text: `Codex 会话（${scope}）:\n\n${lines.join('\n\n')}\n\n回复序号切换（${Math.round(config.selectionTimeoutMs / 60_000)} 分钟内）。`,
+    text: `Codex 会话（${scope}）：\n\n${lines.join('\n\n')}\n\n回复序号切换，或发送 /切换 序号（${Math.round(config.selectionTimeoutMs / 60_000)} 分钟内）。`,
     items,
   };
 }
@@ -83,14 +79,6 @@ export function formatModel(model?: string, reasoningEffort?: string, serviceTie
 
 export function isFastTier(serviceTier?: string | null): boolean {
   return serviceTier === 'fast' || serviceTier === 'priority';
-}
-
-function cliLabel(cli?: ThreadSummary['cli']): string {
-  return cli === 'cc' ? 'CC' : 'Codex';
-}
-
-export function relativeTime(timestamp?: number | string): string {
-  return formatTimestamp(timestamp);
 }
 
 export function normalizeTimestamp(timestamp?: number | string): number | undefined {

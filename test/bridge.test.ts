@@ -23,54 +23,250 @@ function message(text: string, id: string): InboundMessage {
   };
 }
 
-test('keeps slash session lists selectable without exposing model or IDs', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-'));
+test('shows the first-run guide once without swallowing the initial command', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-onboarding-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   const sent: string[] = [];
-  let releaseCalls = 0;
-  const binding: SessionBinding = {
-    threadId: '01234567-89ab-cdef-0123-456789abcdef',
-    cwd: directory,
-    tmuxSession: 'codex-test',
-    cli: 'codex',
-    model: 'gpt-5.6-luna',
-    reasoningEffort: 'max',
-    fast: false,
-    createdAt: Date.now(),
-    lastActivityAt: Date.now(),
-  };
-  store.setBinding('user', binding);
-  const fakeSessions = {
-    status: async () => ({ binding: store.getBinding('user'), running: false, tmuxExists: true, attachedClients: 0 }),
-    list: async () => [{ id: binding.threadId, cwd: directory, preview: '测试会话', updatedAt: Date.now(), cli: 'codex' }],
-    stop: async () => false,
-    release: async () => { releaseCalls += 1; },
-    use: async (_userId: string, threadId: string) => {
-      const next = { ...binding, threadId, lastActivityAt: Date.now() };
-      store.setBinding('user', next);
-      return { binding: next };
-    },
-    close: async () => undefined,
-  } as unknown as SessionManager;
+  const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
   const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
   const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
 
   try {
+    await bridge.handle(message('/help', 'onboarding-1'));
+    assert.match(sent[0] || '', /欢迎使用 wecode/);
+    assert.match(sent[0] || '', /wecode 使用指南/);
+    assert.match(sent[0] || '', /直接发消息：发送给当前 Codex/);
+    assert.match(sent.at(-1) || '', /微信 Codex 快捷操作/);
+    assert.equal(store.get().onboardingShown.user, true);
+
+    await bridge.handle(message('/help', 'onboarding-2'));
+    assert.equal(sent.filter((text) => text.includes('欢迎使用 wecode')).length, 1);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('retries the first-run guide when its delivery fails', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-onboarding-retry-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  let attempts = 0;
+  const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
+  const fakeIlink = {
+    sendText: async (_to: string, _text: string) => {
+      attempts += 1;
+      return { ok: attempts > 1 };
+    },
+  } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+
+  try {
+    await bridge.handle(message('/help', 'onboarding-retry-1'));
+    assert.equal(store.hasOnboardingShown('user'), false);
+
+    await bridge.handle(message('/help', 'onboarding-retry-2'));
+    assert.equal(store.hasOnboardingShown('user'), true);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runs legacy and Chinese session commands locally without the control Agent', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-local-command-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const fakeControl = {
+    run: async () => { throw new Error('Control Agent should not receive local commands'); },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const first = { id: 'first-thread', cwd: directory, preview: '第一个摘要', updatedAt: 1_700_000_100, cli: 'codex' as const };
+  const second = { id: 'second-thread', cwd: directory, preview: '第二个摘要', updatedAt: 1_700_000_000, cli: 'codex' as const };
+  const fakeSessions = {
+    list: async () => [first, second],
+    status: async (userId: string) => ({ binding: store.getBinding(userId), running: false }),
+    resolveThreadId: async (identifier: string) => identifier,
+    use: async (userId: string, threadId: string, cwd?: string) => {
+      const binding: SessionBinding = {
+        threadId,
+        cwd: cwd || directory,
+        cli: 'codex',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      };
+      store.setBinding(userId, binding);
+      return { binding };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = {
+    ...loadConfig(),
+    dataDir: directory,
+    stateFile: path.join(directory, 'state.json'),
+    defaultCwd: directory,
+    searchRoots: [directory],
+  };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
     await bridge.handle(message('/sessions', '1'));
-    assert.match(sent.at(-1) || '', /1\. /);
-    assert.doesNotMatch(sent.at(-1) || '', /gpt-5\.6-luna|01234567-89ab-cdef-0123-456789abcdef/);
-    assert.ok(store.getSelection('user'));
-
-    await bridge.handle(message('1', '2'));
-    assert.match(sent.at(-1) || '', /已切换 Codex 会话/);
+    assert.match(sent.at(-1) || '', /Codex 会话/);
+    assert.match(sent.at(-1) || '', /第一个摘要/);
     assert.equal(store.getControl('user'), undefined);
-    assert.equal(store.getSelection('user'), undefined);
 
-    await bridge.handle(message('/cancel', '4'));
-    assert.equal(store.getBinding('user'), undefined);
-    assert.equal(releaseCalls, 1);
+    await bridge.handle(message('/切换 2', '2'));
+    assert.equal(store.getBinding('user')?.threadId, 'second-thread');
+    assert.match(sent.at(-1) || '', /已切换 Codex 会话/);
+
+    await bridge.handle(message('菜单', 'menu-1'));
+    assert.match(sent.at(-1) || '', /1\. 新建会话/);
+    assert.ok(store.getMenu('user'));
+
+    await bridge.handle(message('2', 'menu-2'));
+    assert.match(sent.at(-1) || '', /Codex 会话/);
+    assert.equal(store.getMenu('user'), undefined);
+    assert.ok(store.getSelection('user'));
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('accepts continuous WeChat input and drains it in order after each turn', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-continuous-input-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const turnInputs: string[] = [];
+  let running = false;
+  let holdResultReply = true;
+  let releaseResultReply: (() => void) | undefined;
+  let resolveResultReplyStarted: (() => void) | undefined;
+  const resultReplyStarted = new Promise<void>((resolve) => { resolveResultReplyStarted = resolve; });
+  const binding: SessionBinding = {
+    threadId: 'continuous-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  store.setBinding('user', binding);
+  const fakeControl = {
+    run: async () => { throw new Error('Control Agent should not receive target messages'); },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    status: async () => ({ binding: store.getBinding('user'), running }),
+    steer: async () => ({ accepted: false }),
+    send: async (_userId: string, text: string) => {
+      turnInputs.push(text);
+      running = true;
+      return { accepted: true };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = {
+    sendText: async (_to: string, text: string) => {
+      sent.push(text);
+      if (text === '第一步完成' && holdResultReply) {
+        holdResultReply = false;
+        resolveResultReplyStarted?.();
+        await new Promise<void>((resolve) => { releaseResultReply = resolve; });
+      }
+      return { ok: true };
+    },
+  } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('第一步', 'continuous-1'));
+    await bridge.handle(message('补充 A', 'continuous-2'));
+    running = false;
+
+    const firstCompletion = bridge.onTurn({
+      threadId: binding.threadId,
+      turnId: 'turn-1',
+      text: '第一步完成',
+      status: 'completed',
+    });
+    await resultReplyStarted;
+    await bridge.handle(message('补充 B', 'continuous-3'));
+    assert.deepEqual(turnInputs, ['第一步']);
+    assert.ok(releaseResultReply);
+    releaseResultReply();
+    await firstCompletion;
+    assert.deepEqual(turnInputs, ['第一步', '补充 A']);
+
+    running = false;
+    await bridge.onTurn({
+      threadId: binding.threadId,
+      turnId: 'turn-2',
+      text: '补充 A 完成',
+      status: 'completed',
+    });
+    assert.deepEqual(turnInputs, ['第一步', '补充 A', '补充 B']);
+    assert.match(sent.at(-1) || '', /已自动继续处理排队消息/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('steers the active Codex turn before falling back to the queue', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-steer-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const steered: string[] = [];
+  const binding: SessionBinding = {
+    threadId: 'steer-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  store.setBinding('user', binding);
+  const fakeControl = {
+    run: async () => { throw new Error('Control Agent should not receive target messages'); },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    status: async () => ({ binding: store.getBinding('user'), running: true }),
+    steer: async (_userId: string, text: string) => {
+      steered.push(text);
+      return { accepted: true };
+    },
+    send: async () => { throw new Error('A steerable turn should not start a new turn'); },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('补充：优先修复测试失败', 'steer-1'));
+    assert.deepEqual(steered, ['补充：优先修复测试失败']);
+    assert.match(sent.at(-1) || '', /已追加到当前任务/);
   } finally {
     await bridge.close();
     await store.save();
@@ -107,14 +303,13 @@ test('lets the control Agent format lists and resolves a natural-language select
     close: async () => undefined,
   } as unknown as ControlAgent;
   const fakeSessions = {
-    status: async () => ({ running: false, tmuxExists: false, attachedClients: 0 }),
+    status: async () => ({ running: false }),
     list: async () => [other, target],
     resolveThreadId: async (identifier: string) => identifier,
     use: async (_userId: string, threadId: string, cwd?: string) => {
       const binding: SessionBinding = {
         threadId,
         cwd: cwd || target.cwd,
-        tmuxSession: 'codex-target',
         cli: 'codex',
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
@@ -146,20 +341,16 @@ test('lets the control Agent format lists and resolves a natural-language select
   }
 });
 
-test('keeps control mode and asks before taking over an occupied native session', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-takeover-'));
+test('requires explicit confirmation before safely taking over an occupied Codex session', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-conflict-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   const sent: string[] = [];
-  let runCount = 0;
-  let useCount = 0;
   const targetCwd = path.join(directory, 'agency-cloud-core');
+  let useCount = 0;
   const fakeControl = {
     run: async () => {
-      runCount += 1;
-      return runCount === 1
-        ? { action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd }, sessionId: 'control-thread' }
-        : { action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd, takeover: true }, sessionId: 'control-thread' };
+      return { action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd }, sessionId: 'control-thread' };
     },
     interrupt: async () => false,
     consumeInterrupted: () => false,
@@ -167,16 +358,15 @@ test('keeps control mode and asks before taking over an occupied native session'
     close: async () => undefined,
   } as unknown as ControlAgent;
   const fakeSessions = {
-    status: async () => ({ running: false, tmuxExists: false, attachedClients: 0 }),
+    status: async () => ({ running: false }),
     list: async () => [{ id: 'occupied-thread', cwd: targetCwd, preview: '空闲会话', updatedAt: 1_700_000_000, cli: 'codex' as const }],
     resolveThreadId: async (identifier: string) => identifier,
-    use: async () => {
+    use: async (_userId: string, _threadId: string, _cwd?: string, _options?: unknown, takeover = false) => {
       useCount += 1;
-      if (useCount === 1) throw new SessionOccupiedError('occupied-thread', targetCwd, false);
+      if (!takeover) throw new SessionOccupiedError('occupied-thread', targetCwd);
       const binding: SessionBinding = {
         threadId: 'occupied-thread',
         cwd: targetCwd,
-        tmuxSession: 'codex-occupied',
         cli: 'codex',
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
@@ -191,13 +381,16 @@ test('keeps control mode and asks before taking over an occupied native session'
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('/ctrl 切换到 occupied-thread', 'takeover-1'));
-    assert.match(sent.at(-1) || '', /空闲状态/);
-    assert.match(sent.at(-1) || '', /是否继续/);
-    assert.ok(store.getControl('user')?.pendingTakeover);
+    await bridge.handle(message('/ctrl 切换到 occupied-thread', 'conflict-1'));
+    assert.match(sent.at(-1) || '', /其他 Codex 客户端/);
+    assert.match(sent.at(-1) || '', /安全接管/);
+    assert.match(sent.at(-1) || '', /确认接管/);
+    assert.equal(store.getControl('user')?.pendingTakeover?.threadId, 'occupied-thread');
+    assert.ok(store.getControl('user'));
     assert.equal(store.getBinding('user'), undefined);
 
-    await bridge.handle(message('继续接管', 'takeover-2'));
+    await bridge.handle(message('确认接管', 'conflict-2'));
+    assert.equal(useCount, 2);
     assert.equal(store.getBinding('user')?.threadId, 'occupied-thread');
     assert.equal(store.getControl('user'), undefined);
   } finally {

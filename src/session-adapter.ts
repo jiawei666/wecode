@@ -1,4 +1,4 @@
-import type { CliKind, SessionLaunchOptions, ThreadSummary } from './model.js';
+import type { CliKind, SessionLaunchOptions, ThreadSnapshot, ThreadSummary } from './model.js';
 import type { CodexNotification } from './codex.js';
 
 /**
@@ -10,8 +10,10 @@ export interface SessionAdapter {
   onNotification(listener: (notification: CodexNotification) => void): () => void;
   startThread(cwd: string, options?: SessionLaunchOptions): Promise<ThreadSummary>;
   resumeThread(threadId: string): Promise<ThreadSummary>;
+  readThread(threadId: string): Promise<ThreadSnapshot>;
   listThreads(cwd?: string): Promise<ThreadSummary[]>;
   startTurn(threadId: string, cwd: string, text: string, options?: SessionLaunchOptions): Promise<string>;
+  steerTurn(threadId: string, turnId: string, text: string): Promise<string>;
   interrupt(threadId: string, turnId: string): Promise<void>;
   unsubscribe(threadId: string): Promise<void>;
   close(): Promise<void>;

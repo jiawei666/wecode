@@ -11,7 +11,6 @@ export interface SessionLaunchOptions {
 export interface SessionBinding extends SessionLaunchOptions {
   threadId: string;
   cwd: string;
-  tmuxSession: string;
   /** A bridge-local label; native Codex sessions are never renamed. */
   note?: string;
   /** False only for a newly created thread before its first turn is persisted. */
@@ -48,6 +47,11 @@ export interface SessionSelection {
   items: SessionSelectionItem[];
 }
 
+export interface MenuState {
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface BotState {
   version: 1;
   token: string;
@@ -56,11 +60,13 @@ export interface BotState {
   scannedUser: string;
   cursor: string;
   contextTokens: Record<string, string>;
+  onboardingShown: Record<string, boolean>;
   bindings: Record<string, SessionBinding>;
   controls: Record<string, ControlState>;
   bindingHistory: Record<string, SessionBinding[]>;
   sessionNotes: Record<string, string>;
   selections: Record<string, SessionSelection>;
+  menuStates: Record<string, MenuState>;
   dedup: string[];
   lastPollAt: number;
   lastError: string;
@@ -73,7 +79,6 @@ export interface ActionResponse {
     | 'list_sessions'
     | 'status'
     | 'interrupt'
-    | 'raw_input'
     | 'set_note'
     | 'reply'
     | 'ask';
@@ -114,4 +119,13 @@ export interface ThreadSummary {
   reasoningEffort?: string;
   serviceTier?: string | null;
   status?: { type?: string; activeFlags?: string[] };
+}
+
+export interface ThreadTurnSummary {
+  id: string;
+  status?: string;
+}
+
+export interface ThreadSnapshot extends ThreadSummary {
+  turns?: ThreadTurnSummary[];
 }

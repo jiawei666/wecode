@@ -34,6 +34,7 @@ test('validates required fields for control actions after schema parsing', () =>
   });
   assert.equal(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":0,"text":"列表"}'), null);
   assert.equal(parseAction('{"action":"new_session"}'), null);
+  assert.equal(parseAction('{"action":"raw_input","text":"hello"}'), null);
   assert.equal(parseAction('{"action":"unknown"}'), null);
 });
 

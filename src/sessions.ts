@@ -2,10 +2,18 @@ import { stat } from 'node:fs/promises';
 import type { AppConfig } from './config.js';
 import type { CodexNotification } from './codex.js';
 import { isFastTier } from './session-display.js';
-import type { BotState, PresentationMode, SessionBinding, SessionLaunchOptions, ThreadSummary, TurnResult } from './model.js';
+import type {
+  BotState,
+  PresentationMode,
+  SessionBinding,
+  SessionLaunchOptions,
+  ThreadSnapshot,
+  ThreadSummary,
+  ThreadTurnSummary,
+  TurnResult,
+} from './model.js';
 import type { SessionAdapter } from './session-adapter.js';
 import { StateStore } from './state.js';
-import { TmuxManager, tmuxSessionName } from './tmux.js';
 
 interface TurnAccumulator {
   threadId: string;
@@ -21,18 +29,23 @@ interface TurnAccumulator {
 export interface SessionStatus {
   binding?: SessionBinding;
   running: boolean;
-  tmuxExists: boolean;
-  attachedClients: number;
 }
 
 export class SessionOccupiedError extends Error {
-  constructor(
-    public readonly threadId: string,
-    public readonly cwd: string,
-    public readonly running: boolean,
-    detail?: string,
-  ) {
-    super(`Codex 会话 ${threadId} 正被原生终端占用${detail ? `：${detail}` : ''}`);
+  readonly threadId: string;
+  readonly cwd: string;
+  readonly running: boolean;
+  readonly takeoverAttempted: boolean;
+
+  constructor(threadId: string, detail?: string);
+  constructor(threadId: string, cwd: string, running: boolean, detail?: string, takeoverAttempted?: boolean);
+  constructor(threadId: string, cwdOrDetail = '', running?: boolean, detail?: string, takeoverAttempted = false) {
+    const legacyDetail = running === undefined ? cwdOrDetail : detail;
+    super(`Codex 会话 ${threadId} 正被其他 Codex 客户端占用${legacyDetail ? `：${legacyDetail}` : ''}`);
+    this.threadId = threadId;
+    this.cwd = running === undefined ? '' : cwdOrDetail;
+    this.running = running ?? false;
+    this.takeoverAttempted = takeoverAttempted;
     this.name = 'SessionOccupiedError';
   }
 }
@@ -45,7 +58,6 @@ export class SessionManager {
     private readonly config: AppConfig,
     private readonly store: StateStore,
     private readonly appServer: SessionAdapter,
-    private readonly tmux: TmuxManager,
     private readonly onTurn: (result: TurnResult) => Promise<void>,
   ) {
     this.unsubscribeNotifications = this.appServer.onNotification((notification) => this.handleNotification(notification));
@@ -60,14 +72,12 @@ export class SessionManager {
     userId: string,
     requestedCwd?: string,
     options: SessionLaunchOptions = {},
-  ): Promise<{ binding: SessionBinding; warning?: string }> {
+  ): Promise<{ binding: SessionBinding }> {
     const cwd = await this.validCwd(requestedCwd || this.store.getBinding(userId)?.cwd || this.config.defaultCwd);
     const launch = this.defaultLaunch(options);
     const thread = await this.appServer.startThread(cwd, launch);
     const binding = this.makeBinding(thread, cwd, undefined, false, launch);
     this.bind(userId, binding);
-    // A new thread has no persisted rollout yet, so `codex resume` cannot
-    // attach to it. The TUI is attached after the first turn starts.
     return { binding };
   }
 
@@ -77,23 +87,15 @@ export class SessionManager {
     requestedCwd?: string,
     options: SessionLaunchOptions = {},
     takeover = false,
-  ): Promise<{ binding: SessionBinding; warning?: string }> {
+  ): Promise<{ binding: SessionBinding }> {
     const previous = this.store.getBinding(userId);
-    const thread = await this.resumeForUse(threadId, requestedCwd, takeover);
+    const fallbackCwd = previous?.threadId === threadId ? previous.cwd : undefined;
+    const thread = await this.resumeForUse(threadId, requestedCwd || fallbackCwd, takeover);
     const cwd = await this.validCwd(requestedCwd || (previous?.threadId === threadId ? previous.cwd : thread.cwd || this.config.defaultCwd));
     const inherited = previous?.threadId === threadId ? previous : undefined;
     const binding = this.makeBinding(thread, cwd, inherited, true, options);
-    let tmuxResult = await this.tmux.start(binding.threadId, binding.cwd, binding.tmuxSession, binding);
-    if (!tmuxResult.ok && isNativeConflict(tmuxResult.error)) {
-      if (!takeover) throw new SessionOccupiedError(threadId, cwd, threadIsRunning(thread), tmuxResult.error);
-      await this.releaseNativeOrThrow(threadId);
-      tmuxResult = await this.tmux.start(binding.threadId, binding.cwd, binding.tmuxSession, binding);
-      if (!tmuxResult.ok && isNativeConflict(tmuxResult.error)) {
-        throw new SessionOccupiedError(threadId, cwd, threadIsRunning(thread), tmuxResult.error);
-      }
-    }
     this.bind(userId, binding);
-    return tmuxResult.ok ? { binding } : { binding, warning: tmuxResult.error };
+    return { binding };
   }
 
   async list(cwd?: string): Promise<ThreadSummary[]> {
@@ -108,13 +110,13 @@ export class SessionManager {
     if (exact) return exact.id;
     const matches = list.filter((thread) => thread.id.startsWith(value));
     if (matches.length === 1 && matches[0]) return matches[0].id;
-    if (matches.length > 1) throw new Error(`会话 ID 前缀匹配到多个会话，请发送 /sessions full 查看完整 ID：${value}`);
+    if (matches.length > 1) throw new Error(`会话 ID 前缀匹配到多个会话，请发送 /会话 full 查看完整 ID：${value}`);
     return value;
   }
 
-  async send(userId: string, text: string): Promise<{ accepted: boolean; warning?: string }> {
+  async send(userId: string, text: string): Promise<{ accepted: boolean }> {
     const binding = this.store.getBinding(userId);
-    if (!binding) return { accepted: false, warning: '没有当前 Codex 会话' };
+    if (!binding) return { accepted: false };
     const fresh = binding.hasRollout === false;
     if (!fresh) {
       try {
@@ -159,8 +161,16 @@ export class SessionManager {
       }
     }
     this.store.setBinding(userId, { ...activeBinding, hasRollout: true, lastActivityAt: Date.now() });
-    const tmuxResult = await this.tmux.start(activeBinding.threadId, activeBinding.cwd, activeBinding.tmuxSession, activeBinding);
-    return tmuxResult.ok ? { accepted: true } : { accepted: true, warning: tmuxResult.error };
+    return { accepted: true };
+  }
+
+  async steer(userId: string, text: string): Promise<{ accepted: boolean }> {
+    const binding = this.store.getBinding(userId);
+    if (!binding) return { accepted: false };
+    const active = [...this.activeTurns.values()].find((turn) => turn.threadId === binding.threadId);
+    if (!active) return { accepted: false };
+    await this.appServer.steerTurn(active.threadId, active.turnId, text);
+    return { accepted: true };
   }
 
   async stop(userId: string): Promise<boolean> {
@@ -169,10 +179,8 @@ export class SessionManager {
     const active = [...this.activeTurns.values()].find((turn) => turn.threadId === binding.threadId);
     if (active) {
       await this.appServer.interrupt(active.threadId, active.turnId).catch(() => undefined);
-      await this.tmux.interrupt(binding.tmuxSession);
       return true;
     }
-    await this.tmux.interrupt(binding.tmuxSession);
     return false;
   }
 
@@ -181,15 +189,7 @@ export class SessionManager {
     if (!binding) return false;
     await this.stop(userId);
     await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
-    await this.tmux.kill(binding.tmuxSession, binding.threadId).catch(() => undefined);
     return true;
-  }
-
-  async raw(userId: string, text: string): Promise<void> {
-    const binding = this.store.getBinding(userId);
-    if (!binding) throw new Error('没有当前 Codex 会话');
-    await this.tmux.sendRaw(binding.tmuxSession, text);
-    this.store.setBinding(userId, { ...binding, lastActivityAt: Date.now() });
   }
 
   async setNote(userId: string, note: string): Promise<SessionBinding> {
@@ -201,27 +201,18 @@ export class SessionManager {
     return updated;
   }
 
-  async back(userId: string): Promise<{ binding: SessionBinding; warning?: string } | undefined> {
-    const previous = this.store.getBindingHistory(userId)[0];
-    if (!previous) return undefined;
-    return this.use(userId, previous.threadId, previous.cwd, previous);
-  }
-
   async status(userId: string): Promise<SessionStatus> {
     const binding = this.store.getBinding(userId);
-    if (!binding) return { running: false, tmuxExists: false, attachedClients: 0 };
-    // Re-subscribe after a bridge restart so turns started from the local TUI
-    // can still produce structured results back to WeChat.
+    if (!binding) return { running: false };
+    // Re-subscribe after a bridge restart so turns started through the App
+    // Server can still produce structured results back to WeChat.
     const thread = binding.hasRollout === false
       ? undefined
       : await this.appServer.resumeThread(binding.threadId).catch(() => undefined);
-    const tmux = await this.tmux.status(binding.tmuxSession);
     const nativeRunning = threadIsRunning(thread);
     return {
       binding,
       running: nativeRunning || [...this.activeTurns.values()].some((turn) => turn.threadId === binding.threadId),
-      tmuxExists: tmux.exists,
-      attachedClients: tmux.attachedClients,
     };
   }
 
@@ -231,9 +222,6 @@ export class SessionManager {
     for (const [userId, binding] of Object.entries(state.bindings)) {
       if (now - binding.lastActivityAt < this.config.idleTimeoutMs) continue;
       if ([...this.activeTurns.values()].some((turn) => turn.threadId === binding.threadId)) continue;
-      const tmux = await this.tmux.status(binding.tmuxSession);
-      if (!tmux.exists || tmux.attachedClients > 0) continue;
-      await this.tmux.kill(binding.tmuxSession, binding.threadId).catch(() => undefined);
       await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
     }
   }
@@ -325,7 +313,6 @@ export class SessionManager {
     return {
       threadId,
       cwd,
-      tmuxSession: tmuxSessionName(threadId),
       cli: thread.cli ?? previous?.cli ?? this.appServer.cli,
       model,
       reasoningEffort,
@@ -362,41 +349,116 @@ export class SessionManager {
     return cwd;
   }
 
-  private async resumeForUse(threadId: string, requestedCwd: string | undefined, takeover: boolean): Promise<ThreadSummary> {
+  private async resumeForUse(threadId: string, requestedCwd?: string, takeover = false): Promise<ThreadSummary> {
+    // `thread/read` is deliberately non-owning. Check it first so an active
+    // client is never silently joined just because `thread/resume` happens to
+    // succeed. This is also the cross-platform replacement for detecting an
+    // external terminal: ownership is decided by App Server state, not a
+    // process, shell, or terminal implementation.
+    const initialSnapshot = await this.readOccupiedThread(threadId);
+    if (initialSnapshot && threadIsRunning(initialSnapshot)) {
+      const cwd = requestedCwd || initialSnapshot.cwd || this.config.defaultCwd;
+      if (!takeover) throw new SessionOccupiedError(threadId, cwd, true, '目标会话当前仍有活动任务');
+      return this.safeTakeover(threadId, cwd, true, initialSnapshot);
+    }
+
+    let resumed: ThreadSummary;
+    try {
+      resumed = await this.appServer.resumeThread(threadId);
+    } catch (error) {
+      if (isSessionConflict(error)) {
+        const snapshot = await this.readOccupiedThread(threadId);
+        const cwd = requestedCwd || snapshot?.cwd || this.config.defaultCwd;
+        const running = threadIsRunning(snapshot);
+        if (!takeover) throw new SessionOccupiedError(threadId, cwd, running, errorText(error));
+        return this.safeTakeover(threadId, cwd, running, snapshot);
+      }
+      throw error;
+    }
+
+    // A race may start a turn after the non-owning read but before resume.
+    // Release only our subscription, inspect again, and fail closed unless
+    // the caller explicitly confirmed takeover.
+    if (threadIsRunning(resumed)) {
+      await this.releaseCurrentSubscription(threadId);
+      const snapshot = await this.readOccupiedThread(threadId);
+      const cwd = requestedCwd || snapshot?.cwd || resumed.cwd || this.config.defaultCwd;
+      const running = threadIsRunning(resumed) || threadIsRunning(snapshot);
+      if (!takeover) throw new SessionOccupiedError(threadId, cwd, running, '恢复后仍显示有活动任务');
+      return this.safeTakeover(threadId, cwd, running, snapshot);
+    }
+    return resumed;
+  }
+
+  private async readOccupiedThread(threadId: string): Promise<ThreadSnapshot | undefined> {
+    try {
+      return await this.appServer.readThread(threadId);
+    } catch {
+      // A legacy adapter may not expose thread/read yet. The caller still
+      // receives an occupied error and the bridge fails closed.
+      return undefined;
+    }
+  }
+
+  private async releaseCurrentSubscription(threadId: string): Promise<void> {
+    try {
+      await this.appServer.unsubscribe(threadId);
+    } catch {
+      // Releasing our own subscription is best effort. It never disconnects
+      // or terminates the external client that caused the occupied state.
+    }
+  }
+
+  private async safeTakeover(
+    threadId: string,
+    cwd: string,
+    running: boolean,
+    initialSnapshot?: ThreadSnapshot,
+  ): Promise<ThreadSummary> {
+    let snapshot = initialSnapshot;
+    if (!snapshot) {
+      try {
+        snapshot = await this.appServer.readThread(threadId);
+      } catch (error) {
+        throw new SessionOccupiedError(threadId, cwd, running, `无法读取 thread 状态：${errorText(error)}`, true);
+      }
+    }
+
+    const activeTurn = activeTurnOf(snapshot);
+    if (threadIsRunning(snapshot) && !activeTurn) {
+      throw new SessionOccupiedError(threadId, cwd, true, '无法确认活动 turn，已停止接管', true);
+    }
+    if (activeTurn) {
+      try {
+        await this.appServer.interrupt(threadId, activeTurn.id);
+      } catch (error) {
+        throw new SessionOccupiedError(threadId, cwd, true, `App Server 无法中断当前任务：${errorText(error)}`, true);
+      }
+      await this.waitForIdle(threadId, cwd);
+    }
+
     try {
       return await this.appServer.resumeThread(threadId);
     } catch (error) {
-      if (!isNativeConflict(error)) throw error;
-      if (!takeover) throw await this.occupiedError(threadId, requestedCwd, error);
-      await this.releaseNativeOrThrow(threadId);
-      try {
-        return await this.appServer.resumeThread(threadId);
-      } catch (retryError) {
-        if (isNativeConflict(retryError)) throw await this.occupiedError(threadId, requestedCwd, retryError);
-        throw retryError;
+      if (isSessionConflict(error)) {
+        throw new SessionOccupiedError(threadId, cwd, false, '已请求中断当前任务，但外部客户端仍占用该会话', true);
       }
+      throw error;
     }
   }
 
-  private async occupiedError(threadId: string, requestedCwd: string | undefined, cause: unknown): Promise<SessionOccupiedError> {
-    let thread: ThreadSummary | undefined;
-    try {
-      thread = await this.appServer.listThreads().then((threads) => threads.find((candidate) => candidate.id === threadId));
-    } catch {
-      // The conflict itself is enough to preserve the binding and ask first.
+  private async waitForIdle(threadId: string, cwd: string): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      let snapshot: ThreadSnapshot;
+      try {
+        snapshot = await this.appServer.readThread(threadId);
+      } catch (error) {
+        throw new SessionOccupiedError(threadId, cwd, true, `无法确认中断结果：${errorText(error)}`, true);
+      }
+      if (!threadIsRunning(snapshot)) return;
+      await delay(250);
     }
-    return new SessionOccupiedError(
-      threadId,
-      requestedCwd || thread?.cwd || this.config.defaultCwd,
-      threadIsRunning(thread),
-      errorText(cause),
-    );
-  }
-
-  private async releaseNativeOrThrow(threadId: string): Promise<void> {
-    const result = await this.tmux.releaseNative(threadId);
-    if (!result.matched) throw new Error(`未找到可安全停止的原生终端（thread_id=${threadId}），请先在原生终端退出该会话后再重试`);
-    if (!result.stopped) throw new Error(`原生终端未能释放（thread_id=${threadId}），请先手动关闭该终端后再重试`);
+    throw new SessionOccupiedError(threadId, cwd, true, '中断请求尚未完成，未执行恢复', true);
   }
 }
 
@@ -408,16 +470,36 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
 }
 
-function threadIsRunning(thread?: ThreadSummary): boolean {
-  return ['active', 'running', 'in_progress'].includes(thread?.status?.type ?? '') || Boolean(thread?.status?.activeFlags?.length);
+function threadIsRunning(thread?: ThreadSummary | ThreadSnapshot): boolean {
+  return ['active', 'running', 'in_progress'].includes(thread?.status?.type ?? '')
+    || Boolean(thread?.status?.activeFlags?.length)
+    || threadTurns(thread).some(isTurnRunning);
 }
 
-function isNativeConflict(error: unknown): boolean {
-  return /thread-store conflict|active writer|already in use|being used|occupied|原生终端/i.test(errorText(error));
+function activeTurnOf(thread: ThreadSnapshot): ThreadTurnSummary | undefined {
+  return [...(thread.turns ?? [])].reverse().find(isTurnRunning);
+}
+
+function isTurnRunning(turn: ThreadTurnSummary): boolean {
+  const status = turn.status?.toLowerCase() ?? '';
+  return ['active', 'running', 'in_progress', 'inprogress', 'started'].includes(status) || /progress/.test(status);
+}
+
+function threadTurns(thread?: ThreadSummary | ThreadSnapshot): ThreadTurnSummary[] {
+  if (!thread || !('turns' in thread)) return [];
+  return thread.turns ?? [];
+}
+
+function isSessionConflict(error: unknown): boolean {
+  return /thread-store conflict|active writer|already in use|being used|occupied|locked|another client|原生终端|其他 Codex 客户端/i.test(errorText(error));
 }
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function inferTurnPresentation(text: string): { kind: 'report'; presentation: 'page' } | undefined {

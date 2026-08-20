@@ -19,7 +19,6 @@ export interface AppConfig {
   controlModel: string;
   controlReasoningEffort: string;
   codexEndpoint: string;
-  tmuxCodexCommand: string;
   idleTimeoutMs: number;
   pageTtlMs: number;
   sharePageBaseUrl: string;
@@ -48,7 +47,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     ? configuredRoots.map((value) => resolveFrom(projectRoot, value))
     : [projectRoot];
   const defaultCwd = resolveFrom(projectRoot, env.WECHATBOT_DEFAULT_CWD?.trim() || projectRoot);
-  const localTmux = path.join(projectRoot, 'bin', 'tmux-codex');
   const localCloudflared = path.join(projectRoot, 'bin', 'cloudflared');
 
   return {
@@ -68,7 +66,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     controlModel: env.CONTROL_MODEL?.trim() || env.CODEX_MODEL?.trim() || 'gpt-5.6-luna',
     controlReasoningEffort: env.CONTROL_REASONING_EFFORT?.trim() || env.CODEX_REASONING_EFFORT?.trim() || 'max',
     codexEndpoint: env.CODEX_APP_ENDPOINT?.trim() || 'ws://127.0.0.1:45037',
-    tmuxCodexCommand: env.TMUX_CODEX_COMMAND?.trim() || localTmux,
     idleTimeoutMs: numberEnvValue(env.WECHATBOT_IDLE_TIMEOUT_MS, 2 * 60 * 60_000),
     pageTtlMs: numberEnvValue(env.WECHATBOT_PAGE_TTL_MS, 24 * 60 * 60_000),
     sharePageBaseUrl: env.SHARE_PAGE_BASE_URL?.trim() || '',

@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { BotState, ControlState, SessionBinding, SessionSelection } from './model.js';
+import type { BotState, ControlState, MenuState, SessionBinding, SessionSelection } from './model.js';
 
 const KEEP_DEDUP = 500;
 
@@ -13,11 +13,13 @@ function emptyState(): BotState {
     scannedUser: '',
     cursor: '',
     contextTokens: {},
+    onboardingShown: {},
     bindings: {},
     controls: {},
     bindingHistory: {},
     sessionNotes: {},
     selections: {},
+    menuStates: {},
     dedup: [],
     lastPollAt: 0,
     lastError: '',
@@ -42,16 +44,22 @@ export class StateStore {
         ...emptyState(),
         ...loaded,
         contextTokens: loaded.contextTokens ?? {},
-        bindings: loaded.bindings ?? {},
+        onboardingShown: loaded.onboardingShown ?? {},
+        bindings: Object.fromEntries(
+          Object.entries(loaded.bindings ?? {}).map(([userId, binding]) => [userId, normalizeBinding(binding)]),
+        ),
         controls: Object.fromEntries(
           Object.entries(loaded.controls ?? {}).map(([userId, control]) => [
             userId,
-            { ...control, lastActivityAt: control?.lastActivityAt ?? control?.startedAt ?? Date.now() },
+            normalizeControl(control),
           ]),
         ),
-        bindingHistory: loaded.bindingHistory ?? {},
+        bindingHistory: Object.fromEntries(
+          Object.entries(loaded.bindingHistory ?? {}).map(([userId, history]) => [userId, history.map(normalizeBinding)]),
+        ),
         sessionNotes: loaded.sessionNotes ?? {},
         selections: loaded.selections ?? {},
+        menuStates: loaded.menuStates ?? {},
         dedup: loaded.dedup ?? [],
       };
     } catch (error) {
@@ -62,6 +70,16 @@ export class StateStore {
 
   get(): BotState {
     return this.state;
+  }
+
+  hasOnboardingShown(userId: string): boolean {
+    return this.state.onboardingShown[userId] === true;
+  }
+
+  markOnboardingShown(userId: string): void {
+    if (this.hasOnboardingShown(userId)) return;
+    this.state.onboardingShown[userId] = true;
+    void this.save();
   }
 
   update(mutator: (state: BotState) => void): void {
@@ -136,6 +154,20 @@ export class StateStore {
     void this.save();
   }
 
+  setMenu(userId: string, menu: MenuState): void {
+    this.state.menuStates[userId] = menu;
+    void this.save();
+  }
+
+  getMenu(userId: string): MenuState | undefined {
+    return this.state.menuStates[userId];
+  }
+
+  clearMenu(userId: string): void {
+    delete this.state.menuStates[userId];
+    void this.save();
+  }
+
   setSessionNote(threadId: string, note: string): void {
     if (note.trim()) this.state.sessionNotes[threadId] = note.trim();
     else delete this.state.sessionNotes[threadId];
@@ -165,4 +197,29 @@ export class StateStore {
       // Best effort on filesystems without POSIX permissions.
     }
   }
+}
+
+function normalizeBinding(binding: SessionBinding): SessionBinding {
+  return {
+    threadId: binding.threadId,
+    cwd: binding.cwd,
+    ...(binding.cli === undefined ? {} : { cli: binding.cli }),
+    ...(binding.model === undefined ? {} : { model: binding.model }),
+    ...(binding.reasoningEffort === undefined ? {} : { reasoningEffort: binding.reasoningEffort }),
+    ...(binding.fast === undefined ? {} : { fast: binding.fast }),
+    ...(binding.note === undefined ? {} : { note: binding.note }),
+    ...(binding.hasRollout === undefined ? {} : { hasRollout: binding.hasRollout }),
+    createdAt: binding.createdAt,
+    lastActivityAt: binding.lastActivityAt,
+  };
+}
+
+function normalizeControl(control: ControlState): ControlState {
+  return {
+    ...(control.sessionId === undefined ? {} : { sessionId: control.sessionId }),
+    startedAt: control.startedAt,
+    lastActivityAt: control.lastActivityAt ?? control.startedAt ?? Date.now(),
+    ...(control.executionFeedback === undefined ? {} : { executionFeedback: control.executionFeedback }),
+    ...(control.pendingTakeover === undefined ? {} : { pendingTakeover: control.pendingTakeover }),
+  };
 }

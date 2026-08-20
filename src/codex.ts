@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import WebSocket from 'ws';
 import type { AppConfig } from './config.js';
-import type { SessionLaunchOptions, ThreadSummary } from './model.js';
+import type { SessionLaunchOptions, ThreadSnapshot, ThreadSummary } from './model.js';
 
 interface RpcMessage {
   id?: number;
@@ -145,6 +145,10 @@ interface AppServerThreadResponse {
   thread?: ThreadSummary & { sessionId?: string };
 }
 
+interface AppServerThreadReadResponse {
+  thread?: ThreadSnapshot;
+}
+
 interface AppServerListResponse {
   data?: ThreadSummary[];
   nextCursor?: string | null;
@@ -237,6 +241,16 @@ export class CodexAppServer {
     return { ...result.thread, cli: 'codex' };
   }
 
+  async readThread(threadId: string): Promise<ThreadSnapshot> {
+    await this.connect();
+    const result = await this.request<AppServerThreadReadResponse>('thread/read', {
+      threadId,
+      includeTurns: true,
+    });
+    if (!result.thread?.id) throw new Error(`Codex thread not found: ${threadId}`);
+    return { ...result.thread, cli: 'codex' };
+  }
+
   async listThreads(cwd?: string): Promise<ThreadSummary[]> {
     await this.connect();
     const threads: ThreadSummary[] = [];
@@ -276,6 +290,16 @@ export class CodexAppServer {
     return turnId;
   }
 
+  async steerTurn(threadId: string, turnId: string, text: string): Promise<string> {
+    await this.connect();
+    const result = await this.request<{ turnId?: string }>('turn/steer', {
+      threadId,
+      input: [{ type: 'text', text }],
+      expectedTurnId: turnId,
+    });
+    return result.turnId || turnId;
+  }
+
   async interrupt(threadId: string, turnId: string): Promise<void> {
     await this.connect();
     await this.request('turn/interrupt', { threadId, turnId });
@@ -292,8 +316,8 @@ export class CodexAppServer {
   }
 
   private async ensureProcess(): Promise<void> {
-    // A separately managed App Server is valid too. This lets tmux-codex and
-    // the bridge share one endpoint without either process owning the other.
+    // A separately managed App Server is valid too. This lets the bridge share
+    // one endpoint with other Codex clients without owning their UI process.
     if (await endpointReady(this.config.codexEndpoint)) return;
 
     if (this.process && !this.process.killed && this.process.exitCode === null) {
