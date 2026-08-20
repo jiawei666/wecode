@@ -127,10 +127,10 @@ test('runs legacy and Chinese session commands locally without the control Agent
 
     await bridge.handle(message('/切换 2', '2'));
     assert.equal(store.getBinding('user')?.threadId, 'second-thread');
-    assert.match(sent.at(-1) || '', /已切换 Codex 会话/);
+    assert.match(sent.at(-1) || '', /已切换会话/);
 
     await bridge.handle(message('菜单', 'menu-1'));
-    assert.match(sent.at(-1) || '', /1\. 新建会话/);
+    assert.match(sent.at(-1) || '', /1\. 新建/);
     assert.ok(store.getMenu('user'));
 
     await bridge.handle(message('2', 'menu-2'));
@@ -221,7 +221,7 @@ test('accepts continuous WeChat input and drains it in order after each turn', a
       status: 'completed',
     });
     assert.deepEqual(turnInputs, ['第一步', '补充 A', '补充 B']);
-    assert.match(sent.at(-1) || '', /已自动继续处理排队消息/);
+    assert.match(sent.at(-1) || '', /已继续/);
   } finally {
     await bridge.close();
     await store.save();
@@ -266,7 +266,7 @@ test('steers the active Codex turn before falling back to the queue', async () =
   try {
     await bridge.handle(message('补充：优先修复测试失败', 'steer-1'));
     assert.deepEqual(steered, ['补充：优先修复测试失败']);
-    assert.match(sent.at(-1) || '', /已追加到当前任务/);
+    assert.match(sent.at(-1) || '', /已追加，继续处理/);
   } finally {
     await bridge.close();
     await store.save();
@@ -331,7 +331,7 @@ test('lets the control Agent format lists and resolves a natural-language select
     assert.ok(store.getControl('user'));
 
     await bridge.handle(message('第 2 个', 'control-2'));
-    assert.match(sent.at(-1) || '', /已切换 Codex 会话/);
+    assert.match(sent.at(-1) || '', /已切换会话/);
     assert.equal(store.getBinding('user')?.threadId, 'target-thread');
     assert.equal(store.getControl('user'), undefined);
   } finally {
@@ -382,7 +382,7 @@ test('requires explicit confirmation before safely taking over an occupied Codex
 
   try {
     await bridge.handle(message('/ctrl 切换到 occupied-thread', 'conflict-1'));
-    assert.match(sent.at(-1) || '', /其他 Codex 客户端/);
+    assert.match(sent.at(-1) || '', /外部客户端/);
     assert.match(sent.at(-1) || '', /安全接管/);
     assert.match(sent.at(-1) || '', /确认接管/);
     assert.equal(store.getControl('user')?.pendingTakeover?.threadId, 'occupied-thread');

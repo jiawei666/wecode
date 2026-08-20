@@ -50,7 +50,7 @@ export function buildSessionList(
     ...(thread.serviceTier ? { fast: isFastTier(thread.serviceTier) } : { fast: false }),
   }));
 
-  if (!visible.length) return { text: '没有找到 Codex 原生会话。', items: [] };
+  if (!visible.length) return { text: '没有找到会话。', items: [] };
   const lines = visible.map((thread, index) => {
     const note = notes[thread.id] || thread.name;
     const title = truncate(note || thread.preview || '未命名会话', 60);
@@ -61,7 +61,7 @@ export function buildSessionList(
   });
   const scope = visible.length < merged.length ? `最近 ${visible.length}/${merged.length}` : `${visible.length}`;
   return {
-    text: `Codex 会话（${scope}）：\n\n${lines.join('\n\n')}\n\n回复序号切换，或发送 /切换 序号（${Math.round(config.selectionTimeoutMs / 60_000)} 分钟内）。`,
+    text: `Codex 会话（${scope}）：\n\n${lines.join('\n\n')}\n\n回复序号切换（${Math.round(config.selectionTimeoutMs / 60_000)} 分钟内）。`,
     items,
   };
 }

@@ -97,7 +97,7 @@ export class BridgeApp {
     const text = message.text.trim();
     if (!text) {
       await this.sendFirstRunGuide(userId);
-      if (message.attachments.length) await this.reply(userId, `收到附件（${message.attachments.length} 个），当前版本先处理文字消息。`);
+      if (message.attachments.length) await this.reply(userId, `收到 ${message.attachments.length} 个附件；当前只处理文字。`);
       return;
     }
 
@@ -112,7 +112,7 @@ export class BridgeApp {
       this.store.clearControl(userId);
       this.store.clearSelection(userId);
       this.store.clearMenu(userId);
-      await this.reply(userId, '控制模式已过期，当前 Codex 会话未改变。');
+      await this.reply(userId, '控制模式已过期；当前会话未改变。');
     }
 
     if (command?.kind === 'cancel') {
@@ -204,7 +204,7 @@ export class BridgeApp {
       case 'back': {
         const previous = this.store.getBindingHistory(userId)[0];
         if (!previous) {
-          await this.reply(userId, '没有可返回的上一个 Codex 会话。');
+          await this.reply(userId, '没有上一个会话。');
           return;
         }
         await this.abandonControl(userId);
@@ -223,7 +223,7 @@ export class BridgeApp {
     const menu = this.store.getMenu(userId);
     if (!menu || menu.expiresAt <= Date.now()) {
       this.store.clearMenu(userId);
-      await this.reply(userId, '菜单已过期，请重新发送“菜单”。');
+      await this.reply(userId, '菜单已过期，请发送“菜单”。');
       return;
     }
 
@@ -250,7 +250,7 @@ export class BridgeApp {
         await this.cancel(userId);
         return;
       default:
-        await this.reply(userId, '菜单里没有这个选项，请回复 1 到 7。');
+        await this.reply(userId, '请回复 1-7。');
     }
   }
 
@@ -258,18 +258,18 @@ export class BridgeApp {
     const selection = this.store.getSelection(userId);
     if (!selection || selection.expiresAt <= Date.now()) {
       this.store.clearSelection(userId);
-      await this.reply(userId, '会话序号已过期，请重新发送“会话”或“菜单”。');
+      await this.reply(userId, '序号已过期，请发送“会话”。');
       return;
     }
     const item = selection.items[index - 1];
     if (!item) {
-      await this.reply(userId, `没有第 ${index} 个会话，请重新发送“会话”。`);
+      await this.reply(userId, `没有第 ${index} 个会话，请重发“会话”。`);
       return;
     }
     if (item.cli !== 'codex') throw new Error('当前版本还未接入 Claude Code 适配器');
     await this.abandonControl(userId);
     await this.stopBeforeSwitch(userId);
-    await this.reply(userId, '正在通过 Codex App Server 恢复目标会话……');
+    await this.reply(userId, '正在恢复会话……');
     await this.useSession(userId, item.threadId, launchOptions(item), item.cwd);
   }
 
@@ -281,7 +281,7 @@ export class BridgeApp {
     this.store.clearMenu(userId);
     const current = this.store.getBinding(userId);
     if (scope === 'here' && !requestedCwd && !current?.cwd && !this.config.defaultCwd) {
-      await this.reply(userId, '当前没有项目目录，无法查看当前项目会话。');
+      await this.reply(userId, '没有项目目录，无法查看当前项目会话。');
       return;
     }
     const cwd = requestedCwd || (scope === 'here' ? current?.cwd || this.config.defaultCwd : undefined);
@@ -320,7 +320,7 @@ export class BridgeApp {
   private async handleControl(userId: string, text: string, skipControlIntro = false): Promise<void> {
     const control = await this.ensureControl(userId, !skipControlIntro);
     if (!text.trim()) {
-      await this.reply(userId, '请描述要定位、切换、新建或恢复的会话。', { source: 'control' });
+      await this.reply(userId, '请描述要查找、新建或切换的会话。', { source: 'control' });
       return;
     }
 
@@ -340,12 +340,12 @@ export class BridgeApp {
       : '';
     const prompt = `${text.trim()}\n\n[桥接层上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
 
-    await this.reply(userId, '正在理解会话操作……');
+    await this.reply(userId, '处理中……');
     try {
       if (control.pendingTakeover && isTakeoverConfirmation(text)) {
         const pending = control.pendingTakeover;
         await this.stopBeforeSwitch(userId);
-        await this.reply(userId, '已确认，正在通过 Codex App Server 安全接管目标会话……');
+        await this.reply(userId, '已确认，正在安全接管……');
         await this.useSession(userId, pending.threadId, {}, pending.cwd, true);
         this.store.clearControl(userId);
         return;
@@ -384,7 +384,7 @@ export class BridgeApp {
       }
       const feedbackText = controlErrorText(error);
       if (latest) this.store.setControl(userId, { ...latest, lastActivityAt: Date.now(), executionFeedback: feedbackText });
-      await this.reply(userId, `${feedbackText}\n可以继续补充信息，或发送“取消”退出。`, { source: 'bridge' });
+      await this.reply(userId, `${feedbackText}\n可继续补充，或发送“取消”。`, { source: 'bridge' });
     }
   }
 
@@ -394,7 +394,7 @@ export class BridgeApp {
       case 'new_session': {
         if (!action.cwd) throw new Error('新建会话缺少项目目录');
         await this.stopBeforeSwitch(userId);
-        await this.reply(userId, '正在创建目标 Codex 会话……');
+        await this.reply(userId, '正在创建会话……');
         const result = await this.sessions.create(userId, action.cwd, launchOptions(action));
         await this.reply(userId, this.sessionCreatedText(result.binding));
         return;
@@ -408,7 +408,7 @@ export class BridgeApp {
           }
         }
         await this.stopBeforeSwitch(userId);
-        await this.reply(userId, '正在通过 Codex App Server 恢复目标会话……');
+        await this.reply(userId, '正在恢复会话……');
         await this.useSession(userId, action.thread_id, launchOptions(action), action.cwd, action.takeover === true);
         return;
       }
@@ -426,14 +426,14 @@ export class BridgeApp {
         return;
       case 'interrupt': {
         const stopped = await this.sessions.stop(userId);
-        await this.reply(userId, stopped ? '已中断当前 Codex 任务。' : '当前没有运行中的 Codex 任务。');
+        await this.reply(userId, stopped ? '任务已停止。' : '当前没有运行中的任务。');
         return;
       }
       case 'set_note': {
         const note = action.note || action.text;
         if (!note?.trim()) throw new Error('备注内容不能为空');
         const binding = await this.sessions.setNote(userId, note);
-        await this.reply(userId, `已记录当前会话备注：${binding.note}`);
+        await this.reply(userId, `已记录备注：${binding.note}`);
         return;
       }
       case 'reply':
@@ -468,7 +468,7 @@ export class BridgeApp {
       try {
         const steered = await this.sessions.steer(userId, text);
         if (steered.accepted) {
-          await this.reply(userId, '已追加到当前任务，Codex 会结合这条消息继续处理。');
+          await this.reply(userId, '已追加，继续处理。');
           return;
         }
       } catch (error) {
@@ -479,7 +479,7 @@ export class BridgeApp {
       const queue = this.queued.get(userId) ?? [];
       queue.push(text);
       this.queued.set(userId, queue);
-      await this.reply(userId, `已收到，当前任务完成后自动继续（排队 ${queue.length} 条）。`);
+      await this.reply(userId, `已排队 ${queue.length} 条，任务完成后继续。`);
       if (!status.running && !this.draining.has(userId)) {
         void this.drainQueue(userId).catch((error) => {
           process.stderr.write(`[bridge] queued turn failed: ${errorMessage(error)}\n`);
@@ -489,10 +489,10 @@ export class BridgeApp {
     }
     const result = await this.sessions.send(userId, text);
     if (!result.accepted) {
-      await this.reply(userId, '当前没有绑定 Codex 会话。');
+      await this.reply(userId, '当前没有会话。');
       return;
     }
-    await this.reply(userId, '已通过 Codex App Server 发送给 Codex，正在执行……');
+    await this.reply(userId, '已发送，执行中……');
   }
 
   async onTurn(result: TurnResult): Promise<void> {
@@ -504,7 +504,7 @@ export class BridgeApp {
     // queue behind messages already waiting, instead of overtaking them.
     this.draining.add(userId);
     try {
-      if (result.status === 'interrupted') await this.reply(userId, 'Codex 任务已中断。');
+      if (result.status === 'interrupted') await this.reply(userId, '任务已中断。');
       else if (result.status === 'failed') await this.reply(userId, `Codex 执行失败：${result.error || result.text || '未知错误'}`);
       else if (result.text.trim()) await this.reply(userId, result.text, {
         kind: result.kind,
@@ -512,7 +512,7 @@ export class BridgeApp {
         cwd: binding.cwd,
         source: 'codex',
       });
-      else await this.reply(userId, 'Codex 已完成，但没有返回可展示的文本。');
+      else await this.reply(userId, '已完成，无可展示内容。');
       await this.flushQueuedTurn(userId);
     } finally {
       this.draining.delete(userId);
@@ -545,11 +545,11 @@ export class BridgeApp {
     try {
       const result = await this.sessions.send(userId, next);
       if (!result.accepted) {
-        await this.reply(userId, '排队消息未发送：当前没有绑定 Codex 会话。');
+        await this.reply(userId, '排队消息未发送：没有当前会话。');
         return;
       }
       const remaining = this.queued.get(userId)?.length ?? 0;
-      await this.reply(userId, `已自动继续处理排队消息${remaining ? `（剩余 ${remaining} 条）` : ''}……`);
+      await this.reply(userId, `已继续${remaining ? `，剩余 ${remaining} 条` : ''}。`);
     } catch (error) {
       const rest = this.queued.get(userId) ?? [];
       this.queued.set(userId, [next, ...rest]);
@@ -565,16 +565,16 @@ export class BridgeApp {
     const status = await this.sessions.status(userId);
     const control = this.store.getControl(userId);
     const mode = control
-      ? `控制模式：${this.controlAgent.isRunning(userId) ? '处理中' : '等待你的指令'}`
-      : '桥接模式：目标 Codex';
+      ? `控制：${this.controlAgent.isRunning(userId) ? '处理中' : '等待指令'}`
+      : '目标 Codex';
     const queue = this.queued.get(userId)?.length ?? 0;
     if (!status.binding) {
-      await this.reply(userId, `${mode}\n当前没有绑定 Codex 会话。`);
+      await this.reply(userId, `${mode}\n当前没有会话。`);
       return;
     }
     await this.reply(
       userId,
-      `${mode}\n控制层：Codex App Server\n目录：${status.binding.cwd}\n模型：${formatModel(status.binding.model, status.binding.reasoningEffort, status.binding.fast ? 'fast' : null)}\n任务：${status.running ? '运行中' : '空闲'}\n队列：${queue}`,
+      `${mode}\n目录：${status.binding.cwd}\n模型：${formatModel(status.binding.model, status.binding.reasoningEffort, status.binding.fast ? 'fast' : null)}\n任务：${status.running ? '运行中' : '空闲'}\n队列：${queue}`,
     );
   }
 
@@ -586,15 +586,15 @@ export class BridgeApp {
     this.queued.delete(userId);
     const targetStopped = await this.sessions.stop(userId);
     if (controlStopped && targetStopped) {
-      await this.reply(userId, '已中断控制 Agent，并通过 Codex App Server 中断当前 Codex 任务。');
+      await this.reply(userId, '控制和 Codex 任务已停止。');
     } else if (controlStopped) {
-      await this.reply(userId, '已中断控制 Agent，当前 Codex 没有运行中的任务。');
+      await this.reply(userId, '控制已停止；Codex 当前空闲。');
     } else if (targetStopped) {
-      await this.reply(userId, '已通过 Codex App Server 中断当前 Codex 任务。');
+      await this.reply(userId, 'Codex 任务已停止。');
     } else if (hasControl) {
-      await this.reply(userId, '控制 Agent 当前没有运行中的任务，Codex 也没有运行中的任务。');
+      await this.reply(userId, '控制和 Codex 都没有运行中的任务。');
     } else {
-      await this.reply(userId, '当前没有运行中的 Codex 任务。');
+      await this.reply(userId, '当前没有运行中的任务。');
     }
   }
 
@@ -604,24 +604,24 @@ export class BridgeApp {
     if (this.store.getControl(userId)) {
       await this.controlAgent.interrupt(userId).catch(() => false);
       this.leaveControl(userId);
-      await this.reply(userId, '已退出控制模式，当前 Codex 会话未改变。');
+      await this.reply(userId, '已退出控制模式。');
       return;
     }
     const binding = this.store.getBinding(userId);
     if (!binding) {
-      await this.reply(userId, '当前没有活动的控制流程或 Codex 绑定。');
+      await this.reply(userId, '当前没有控制流程或会话。');
       return;
     }
     await this.sessions.release(userId);
     this.store.pushBindingHistory(userId, binding, this.config.bindingHistoryLimit);
     this.store.clearBinding(userId);
-    await this.reply(userId, '已停止当前任务并退出当前 Codex 绑定。原生 Codex thread 仍保留，可通过 /ctrl 查找并恢复。');
+    await this.reply(userId, '已退出当前会话；历史仍保留，可用 /ctrl 恢复。');
   }
 
   private async stopBeforeSwitch(userId: string): Promise<void> {
     const status = await this.sessions.status(userId);
     if (!status.running) return;
-    await this.reply(userId, '正在停止当前任务……');
+    await this.reply(userId, '正在停止任务……');
     this.queued.delete(userId);
     await this.sessions.stop(userId);
   }
@@ -635,7 +635,7 @@ export class BridgeApp {
     }
     const created = { startedAt: Date.now(), lastActivityAt: Date.now() };
     this.store.setControl(userId, created);
-    if (announce) await this.reply(userId, '已进入控制模式。后续普通消息会继续交给 Control Agent；发送“取消”退出。');
+    if (announce) await this.reply(userId, '已进入控制模式；发送“取消”退出。');
     return created;
   }
 
@@ -643,7 +643,7 @@ export class BridgeApp {
     const current = this.store.getControl(userId);
     const now = Date.now();
     if (error.takeoverAttempted) {
-      const message = '安全接管未完成：App Server 已按流程请求中断，但目标会话仍被外部 Codex 客户端占用。wecode 未终止外部进程。';
+      const message = '安全接管失败：目标仍被外部客户端占用，未终止外部进程。';
       if (current) {
         const { pendingTakeover: _pendingTakeover, ...withoutPendingTakeover } = current;
         this.store.setControl(userId, {
@@ -652,7 +652,7 @@ export class BridgeApp {
           executionFeedback: message,
         });
       }
-      await this.reply(userId, `${message}\n请先在外部 CLI、IDE 或桌面客户端中结束该会话，再重试；控制模式仍保留，也可以发送 /cancel。`, { source: 'bridge' });
+      await this.reply(userId, `${message}\n请先结束外部任务后重试；可发送 /cancel。`, { source: 'bridge' });
       return;
     }
 
@@ -662,7 +662,7 @@ export class BridgeApp {
       running: error.running,
     };
     const control = current ?? { startedAt: now, lastActivityAt: now };
-    const message = `目标 Codex 会话正被其他 Codex 客户端占用。目标目录：${pending.cwd}`;
+    const message = `目标会话被占用：${pending.cwd}`;
     this.store.setControl(userId, {
       ...control,
       lastActivityAt: now,
@@ -671,7 +671,7 @@ export class BridgeApp {
     });
     await this.reply(
       userId,
-      `${message}\n\n可以进行一次安全接管：wecode 会通过 Codex App Server 读取状态、请求中断活动任务、等待空闲后恢复会话；不会杀掉外部 CLI、IDE 或桌面客户端。\n\n如确认接管此目标，请只回复“确认接管”；如果不是，请回复“/cancel”。`,
+      `${message}\n回复“确认接管”进行安全接管；不会杀掉外部客户端。\n否则回复“取消”。`,
       { source: 'bridge' },
     );
   }
@@ -710,11 +710,11 @@ export class BridgeApp {
   }
 
   private sessionCreatedText(binding: SessionBinding): string {
-    return `已新建 Codex 会话\n目录：${binding.cwd}\n控制层：Codex App Server。\n${SESSION_ROUTING_HINT}`;
+    return `已新建会话\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
   }
 
-  private switchedText(binding: SessionBinding, prefix = '已切换 Codex 会话'): string {
-    return `${prefix}\n目录：${binding.cwd}\n控制层：Codex App Server。\n${SESSION_ROUTING_HINT}`;
+  private switchedText(binding: SessionBinding, prefix = '已切换会话'): string {
+    return `${prefix}\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
   }
 
   private async sendFirstRunGuide(userId: string): Promise<boolean> {
@@ -790,9 +790,9 @@ function decorateReply(text: string, source: ReplySource): string {
 function controlErrorText(error: unknown): string {
   const message = errorMessage(error);
   if (/interrupt|signal/i.test(message)) return '控制 Agent 已中断。';
-  if (/no rollout found|thread not found/i.test(message)) return '控制会话暂时无法恢复，但控制模式仍保留。';
+  if (/no rollout found|thread not found/i.test(message)) return '控制会话无法恢复；控制模式仍保留。';
   if (/thread-store conflict|active writer|already in use|being used|occupied|locked|another client|其他 Codex 客户端|原生终端占用/i.test(message)) {
-    return '目标 Codex 会话正被其他 Codex 客户端占用；可以先明确回复“确认接管”，让桥接层通过 App Server 安全请求中断并恢复，或先在外部客户端结束该会话。';
+    return '目标会话被占用；回复“确认接管”安全恢复，或先结束外部任务。';
   }
   return `控制 Agent 暂时没有完成这次请求：${message.slice(0, 240)}`;
 }
@@ -800,10 +800,10 @@ function controlErrorText(error: unknown): string {
 function userFacingError(error: unknown): string {
   const message = errorMessage(error);
   if (/thread-store conflict|active writer|already in use|being used|occupied|locked|another client|其他 Codex 客户端|原生终端占用/i.test(message)) {
-    return '这个 Codex 会话正被其他 Codex 客户端占用；请通过控制模式明确回复“确认接管”，或先关闭外部 Codex CLI、IDE 或桌面客户端后再重试。';
+    return '目标会话被占用；回复“确认接管”，或先结束外部任务。';
   }
   if (/no rollout found|thread not found/i.test(message)) {
-    return '当前绑定的 Codex 会话已失效，请发送 /ctrl 重新创建会话或查找原生会话。';
+    return '当前会话已失效，请发送 /ctrl 重新创建或恢复。';
   }
   if (/项目目录不能为空|项目目录不存在|没有当前 Codex 会话|会话 ID|Claude Code/i.test(message)) return message;
   return '处理请求时遇到内部错误，请稍后重试；详细信息已记录在本地日志。';

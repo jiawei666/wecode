@@ -9,7 +9,7 @@ test('builds a compact local fallback list with selectable items', () => {
   ], { ...loadConfig(), sessionListLimit: 5 });
   assert.match(result.text, /1\. project/);
   assert.match(result.text, /分析桥接层/);
-  assert.match(result.text, /\/切换 序号/);
+  assert.match(result.text, /回复序号切换/);
   assert.equal(result.items[0]?.threadId, 'thread-a');
 });
 

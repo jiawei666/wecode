@@ -73,16 +73,19 @@ Windows PowerShell：
 Copy-Item .env.example .env
 ```
 
-至少检查这些配置：
+大多数情况下 `.env` 不需要填写任何值。长期运行或共享机器，建议至少填写微信白名单：
 
 ```dotenv
 WECHATBOT_ALLOWED_USER=你的微信用户ID
-CODEX_COMMAND=codex
-CODEX_MODEL=你的可用模型名
+```
+
+如果要指定新会话目录，再填写：
+
+```dotenv
 WECHATBOT_DEFAULT_CWD=你的项目目录
 ```
 
-首次登录可以暂时留空 `WECHATBOT_ALLOWED_USER`，服务会使用二维码登录得到的用户；长期运行或共享机器建议显式填写白名单。实际变量名是 `WECHATBOT_DEFAULT_CWD`，完整配置请以 [`.env.example`](.env.example) 为准。
+首次登录可以暂时留空 `WECHATBOT_ALLOWED_USER`，服务会使用二维码登录得到的用户。模型、Codex 路径、App Server 地址和分享页地址都有默认值，需要定制时再按 [`.env.example`](.env.example) 或下方高级配置覆盖。
 
 ### 3. 登录并启动
 
@@ -234,15 +237,24 @@ macOS/Windows 直接托管 `npm start` 即可，不需要 tmux 或 Unix shell。
 
 ## 配置参考
 
-复制 [`.env.example`](.env.example) 后按需修改。常用配置：
+复制 [`.env.example`](.env.example) 后按需修改。配置分两层：
+
+### 常用配置
+
+| 配置 | 作用 |
+| --- | --- |
+| `WECHATBOT_ALLOWED_USER` | 允许使用机器的微信用户，建议显式填写 |
+| `WECHATBOT_DEFAULT_CWD` | 新会话默认工作目录 |
+| `WECHATBOT_SEARCH_ROOTS` | 可选的项目搜索目录，多个目录用逗号分隔 |
+
+### 高级配置
+
+以下变量都有稳定默认值，通常不需要修改：
 
 | 配置 | 作用 |
 | --- | --- |
 | `WECHATBOT_DATA_DIR` | 登录凭证和本地运行状态目录，默认 `.data` |
-| `WECHATBOT_ALLOWED_USER` | 允许使用机器的微信用户，建议显式填写 |
 | `WECHATBOT_HOME` | Control Agent 可扫描的本机 home 目录 |
-| `WECHATBOT_SEARCH_ROOTS` | 项目搜索目录，多个目录用逗号分隔 |
-| `WECHATBOT_DEFAULT_CWD` | 新会话默认工作目录 |
 | `CODEX_COMMAND` | Codex CLI 路径或命令名 |
 | `CODEX_MODEL` / `CONTROL_MODEL` | 目标会话 / 控制 Agent 模型 |
 | `CODEX_REASONING_EFFORT` / `CONTROL_REASONING_EFFORT` | 两类 Agent 的推理强度 |
@@ -250,8 +262,14 @@ macOS/Windows 直接托管 `npm start` 即可，不需要 tmux 或 Unix shell。
 | `CODEX_APP_ENDPOINT` | Codex App Server WebSocket 地址 |
 | `CLOUDFLARED_COMMAND` | `cloudflared` 路径或命令名 |
 | `SHARE_PAGE_BASE_URL` | 自建反向代理的分享页基地址 |
+| `WECHATBOT_PAGE_TTL_MS` | 分享页保留时长 |
+| `WECHATBOT_IDLE_TIMEOUT_MS` / `WECHATBOT_CONTROL_TIMEOUT_MS` | 会话和控制模式超时 |
+| `WECHATBOT_SELECTION_TIMEOUT_MS` | 菜单/会话序号有效时长 |
+| `WECHATBOT_BINDING_HISTORY_LIMIT` / `WECHATBOT_SESSION_LIST_LIMIT` | 本地历史和列表数量 |
+| `WECHATBOT_CHAT_CHUNK_SIZE` / `WECHATBOT_POLL_TIMEOUT_MS` | 微信分片和轮询参数 |
+| `ILINK_API_BASE` / `ILINK_CDN_BASE` / `ILINK_CHANNEL_VERSION` | iLink 协议覆盖参数 |
 
-留空的 `WECHATBOT_SEARCH_ROOTS` 和 `WECHATBOT_DEFAULT_CWD` 默认使用当前项目目录。真实凭证、用户 ID、个人路径和运行状态应留在 `.env`、`.data/` 或 `runtime/` 中，不要提交到仓库。
+未填写的变量使用代码默认值；`WECHATBOT_SEARCH_ROOTS` 和 `WECHATBOT_DEFAULT_CWD` 未填写时使用当前项目目录。真实凭证、用户 ID、个人路径和运行状态应留在 `.env`、`.data/` 或 `runtime/` 中，不要提交到仓库。
 
 ## 长报告与分享页
 
