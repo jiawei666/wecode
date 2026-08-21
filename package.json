@@ -1,6 +1,6 @@
 {
   "name": "@jiawei666/wecode",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "用微信控制本地 Codex，并把长文案变成临时手机分享页",
   "type": "module",
   "bin": {

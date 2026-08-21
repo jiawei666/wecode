@@ -10,6 +10,7 @@ import { StateStore } from '../src/state.js';
 
 test('infers a share page for repository report requests', () => {
   assert.deepEqual(inferTurnPresentation('请分析这个仓库代码并生成总结报告'), { kind: 'report', presentation: 'page' });
+  assert.deepEqual(inferTurnPresentation('请把这段内容生成分享页'), { kind: 'plain', presentation: 'page' });
   assert.equal(inferTurnPresentation('你现在是什么模型'), undefined);
 });
 

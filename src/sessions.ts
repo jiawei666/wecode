@@ -537,10 +537,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function inferTurnPresentation(text: string): { kind: 'report'; presentation: 'page' } | undefined {
+export function inferTurnPresentation(text: string): { kind: 'report' | 'plain'; presentation: 'page' } | undefined {
   const normalized = text.toLowerCase();
-  const explicitReport = /总结报告|分析报告|审查报告|生成报告|长报告|分享页|sharepage|\breport\b|\bsummary\b/i.test(normalized);
+  const explicitReport = /总结报告|分析报告|审查报告|生成报告|长报告|\breport\b|\bsummary\b/i.test(normalized);
+  const explicitShare = /分享页|sharepage/i.test(normalized);
   const repositorySummary = /(总结|分析|审查|评估|梳理).{0,24}(仓库|项目|代码|repo|repository|codebase|架构)/i.test(normalized);
   if (explicitReport || repositorySummary) return { kind: 'report', presentation: 'page' };
+  if (explicitShare) return { kind: 'plain', presentation: 'page' };
   return undefined;
 }

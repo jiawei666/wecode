@@ -145,7 +145,7 @@ Windows 或其他架构：从 [Cloudflare 官方下载页](https://developers.cl
 写一份完整的项目分析报告，并生成分享页
 ```
 
-wecode 会在需要时自动启动 Quick Tunnel，生成随机的 `trycloudflare.com` 地址，并返回带随机路径的分享链接。用户不需要填写 `SHARE_PAGE_BASE_URL`。
+wecode 会在需要时自动启动 Quick Tunnel，生成随机的 `trycloudflare.com` 地址，并返回带随机路径的分享链接。分享页支持分析、计划、变更摘要和普通长文，不限定为分析报告；标题会根据内容动态生成，页头显示项目名，页脚显示 `Powered by wecode`。用户不需要填写 `SHARE_PAGE_BASE_URL`。
 
 Quick Tunnel 适合临时阅读和开发测试，不是正式网站服务。链接相当于访问凭证，拿到链接的人都可以访问页面；不要分享敏感内容。Cloudflare 的 Quick Tunnel 还有并发和协议限制，详见[官方说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)。
 
