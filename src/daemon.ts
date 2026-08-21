@@ -35,7 +35,7 @@ export function daemonPaths(config: AppConfig): DaemonPaths {
 }
 
 export function backgroundArguments(argv: string[] = process.argv): string[] {
-  const args = argv.slice(1).filter((arg) => !['login', 'run', '--background'].includes(arg));
+  const args = argv.slice(1).filter((arg) => !['login', 'restart', 'run', '--background'].includes(arg));
   return [...args, '--background'];
 }
 

@@ -25,7 +25,7 @@ wecode（本机桥接层，登录后自动后台运行）
  ├─ 普通消息（有会话） ─────► Codex App Server ─► Codex 原生 threads
  ├─ 普通消息（无会话） ─────► 自动进入会话管理 Agent
  ├─ “帅哥，帮我……” ───────► 已有会话时进入会话管理 Agent
- ├─ status / login / stop / logs ─► 后台进程管理
+ ├─ status / login / restart / stop / logs ─► 后台进程管理
  ├─ 状态 / 停止 / 退出 / 帮助 ─► 本地确定性操作
  └─ 长回答
       ├─ 本地临时 Markdown 页面
@@ -61,11 +61,31 @@ Windows 如果终端中 `codex` 可以运行但 wecode 仍提示找不到 Codex�
 }
 ```
 
-首次启动执行 `wecode`，扫码登录。以后需要重新扫码时执行：
+首次启动执行 `wecode`，扫码登录。完整命令见下表。
 
-```bash
-wecode login
-```
+## 命令
+
+### 终端命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `wecode` | 首次扫码登录；已有登录状态时直接启动后台进程 |
+| `wecode login` | 停止旧进程，重新扫码登录并启动后台进程 |
+| `wecode restart` | 重启后台进程，复用已有登录状态；未登录时才扫码 |
+| `wecode status` | 查看后台进程、登录状态和最近错误 |
+| `wecode logs` | 查看后台日志 |
+| `wecode stop` | 停止后台进程 |
+| `wecode --help` | 查看命令帮助 |
+
+### 微信消息命令
+
+| 消息 | 作用 |
+| --- | --- |
+| `状态` | 查看当前会话、任务和队列 |
+| `停止` | 中断当前任务并清空队列 |
+| `退出` | 退出当前会话管理流程；没有管理流程时退出当前会话 |
+| `帮助` | 查看会话管理帮助 |
+| `帅哥，帮我……` | 已有会话时进入会话管理模式 |
 
 ## 使用
 
@@ -89,13 +109,6 @@ wecode login
 ```
 
 新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出`、`帮助` 可以直接使用。
-
-| 消息 | 作用 |
-| --- | --- |
-| `状态` | 查看当前目录、任务和队列 |
-| `停止` | 中断当前任务并清空队列 |
-| `退出` | 退出当前会话管理流程 |
-| `帮助` | 查看简短帮助 |
 
 ## 长文案与 Cloudflare 临时链接
 
@@ -126,7 +139,7 @@ Windows 或其他架构：从 [Cloudflare 官方下载页](https://developers.cl
 
 ### 2. 直接使用
 
-不需要 Cloudflare 账号、域名、Token，也不要执行 `cloudflared tunnel login`。安装完成后重启 `wecode`，然后发送：
+不需要 Cloudflare 账号、域名、Token，也不要执行 `cloudflared tunnel login`。安装完成后先确认 `cloudflared --version` 可用；如果运行中的 wecode 找不到它，执行 `wecode restart`，然后发送：
 
 ```text
 写一份完整的项目分析报告，并生成分享页

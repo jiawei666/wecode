@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   const command = args.find((arg) => !arg.startsWith('-')) || 'run';
   const config = loadConfig();
   if (args.includes('--help') || args.includes('-h') || command === 'help') {
-    process.stdout.write('用法：\n  wecode             首次扫码登录，之后自动后台运行\n  wecode login       重新扫码登录，完成后自动后台运行\n  wecode status      查看后台进程状态\n  wecode stop        停止后台进程\n  wecode logs        查看后台日志\n');
+    process.stdout.write('用法：\n  wecode             首次扫码登录，之后自动后台运行\n  wecode login       重新扫码登录，完成后自动后台运行\n  wecode restart     重启后台进程，复用已有登录状态\n  wecode status      查看后台进程状态\n  wecode stop        停止后台进程\n  wecode logs        查看后台日志\n');
     return;
   }
   await ensureConfigFile(config);
@@ -44,6 +44,13 @@ async function main(): Promise<void> {
   if (command === 'login') {
     await stopDaemon(config);
     await login(config, store);
+    await launchBackground(config);
+    return;
+  }
+
+  if (command === 'restart') {
+    await stopDaemon(config);
+    if (!store.get().token || !store.get().botId) await login(config, store, true);
     await launchBackground(config);
     return;
   }
