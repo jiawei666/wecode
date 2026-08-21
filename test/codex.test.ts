@@ -4,6 +4,14 @@ import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { loadConfig } from '../src/config.js';
 import { CodexAppServer } from '../src/codex.js';
+import { buildWindowsCommandLine } from '../src/process.js';
+
+test('quotes Windows Codex command paths and arguments', () => {
+  assert.equal(
+    buildWindowsCommandLine('C:\\Program Files\\nodejs\\codex.cmd', ['app-server', '-C', 'C:\\Users\\Test User\\project']),
+    '"C:\\Program Files\\nodejs\\codex.cmd" app-server -C "C:\\Users\\Test User\\project"',
+  );
+});
 
 test('sends the current Codex sandbox enum to thread/start', async () => {
   const httpServer = createServer((request, response) => {
@@ -52,7 +60,7 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
     await appServer.startThread('/workspace/project');
     assert.equal(params?.sandbox, 'danger-full-access');
     assert.equal(params?.serviceTier, null);
-    assert.equal(params?.model, 'gpt-5.6-luna');
+    assert.equal(params?.model, undefined);
     assert.deepEqual((params?.config as Record<string, unknown>).service_tier, null);
     const snapshot = await appServer.readThread('test-thread');
     assert.equal(readParams?.threadId, 'test-thread');
@@ -67,4 +75,18 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
     await new Promise<void>((resolve) => websocketServer.close(() => resolve()));
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   }
+});
+
+test('reports a missing Codex executable instead of crashing on spawn error', async () => {
+  const appServer = new CodexAppServer({
+    ...loadConfig(),
+    codexCommand: 'wecode-test-missing-codex-command',
+    codexEndpoint: 'ws://127.0.0.1:1',
+  });
+
+  await assert.rejects(
+    () => appServer.startThread('/workspace/project'),
+    /找不到 Codex CLI|Codex CLI.*PATH/i,
+  );
+  await appServer.close();
 });

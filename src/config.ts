@@ -1,8 +1,28 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+export interface UserConfig {
+  version?: number;
+  dataDir?: string;
+  homeDir?: string;
+  defaultCwd?: string;
+  searchRoots?: string[];
+  allowedUser?: string;
+  codexCommand?: string;
+  codexModel?: string;
+  codexReasoningEffort?: string;
+  codexFast?: boolean;
+  controlModel?: string;
+  controlReasoningEffort?: string;
+  cloudflaredCommand?: string;
+  sharePageBaseUrl?: string;
+  pageTtlMs?: number;
+}
+
 export interface AppConfig {
+  configFile: string;
   dataDir: string;
   stateFile: string;
   apiBase: string;
@@ -29,61 +49,124 @@ export interface AppConfig {
   pollTimeoutMs: number;
 }
 
+export interface LoadConfigOptions {
+  userHome?: string;
+  configFile?: string;
+}
+
 function resolveFrom(base: string, value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(base, value);
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): AppConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+  options: LoadConfigOptions = {},
+): AppConfig {
   const projectRoot = path.resolve(cwd);
-  const dataDir = resolveFrom(projectRoot, env.WECHATBOT_DATA_DIR?.trim() || '.data');
-  const homeDir = resolveFrom(projectRoot, env.WECHATBOT_HOME?.trim() || homedir());
+  const userHome = options.userHome || homedir();
+  const configFile = options.configFile || env.WECODE_CONFIG_FILE?.trim() || path.join(userHome, '.wecode', 'config.json');
+  const userConfig = readUserConfig(configFile);
+  const configDir = path.dirname(configFile);
+  const legacyDataDir = path.join(projectRoot, '.data');
+  const configuredDataDir = firstText(userConfig.dataDir, env.WECHATBOT_DATA_DIR);
+  const dataDir = configuredDataDir
+    ? resolveFrom(projectRoot, configuredDataDir)
+    : !existsSync(configFile) && existsSync(path.join(legacyDataDir, 'state.json'))
+      ? legacyDataDir
+      : configDir;
+  const homeDir = resolveFrom(projectRoot, firstText(userConfig.homeDir, env.WECHATBOT_HOME) || userHome);
   const configuredRoots = env.WECHATBOT_SEARCH_ROOTS
     ?.split(',')
     .map((value) => value.trim())
     .filter(Boolean);
-  const searchRoots = configuredRoots?.length
-    ? configuredRoots.map((value) => resolveFrom(projectRoot, value))
-    : [projectRoot];
-  const defaultCwd = resolveFrom(projectRoot, env.WECHATBOT_DEFAULT_CWD?.trim() || projectRoot);
-  const localCloudflared = path.join(projectRoot, 'bin', 'cloudflared');
+  const fileRoots = Array.isArray(userConfig.searchRoots)
+    ? userConfig.searchRoots.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    : [];
+  const defaultCwd = resolveFrom(projectRoot, firstText(userConfig.defaultCwd, env.WECHATBOT_DEFAULT_CWD) || projectRoot);
+  const searchRoots = fileRoots.length
+    ? fileRoots.map((value) => resolveFrom(projectRoot, value))
+    : configuredRoots?.length
+      ? configuredRoots.map((value) => resolveFrom(projectRoot, value))
+      : [defaultCwd];
+  const localCloudflared = [
+    path.join(projectRoot, 'bin', 'cloudflared'),
+    path.join(configDir, 'bin', 'cloudflared'),
+  ].find((candidate) => existsSync(candidate));
+  const codexModel = firstText(userConfig.codexModel, env.CODEX_MODEL) || '';
+  const codexReasoningEffort = firstText(userConfig.codexReasoningEffort, env.CODEX_REASONING_EFFORT) || '';
 
   return {
+    configFile,
     dataDir,
     stateFile: path.join(dataDir, 'state.json'),
-    apiBase: env.ILINK_API_BASE?.trim() || 'https://ilinkai.weixin.qq.com',
-    cdnBase: env.ILINK_CDN_BASE?.trim() || 'https://novac2c.cdn.weixin.qq.com/c2c',
-    channelVersion: env.ILINK_CHANNEL_VERSION?.trim() || 'wechatbot/0.1',
+    apiBase: firstText(env.ILINK_API_BASE) || 'https://ilinkai.weixin.qq.com',
+    cdnBase: firstText(env.ILINK_CDN_BASE) || 'https://novac2c.cdn.weixin.qq.com/c2c',
+    channelVersion: firstText(env.ILINK_CHANNEL_VERSION) || 'wechatbot/0.1',
     homeDir,
     defaultCwd,
     searchRoots,
-    allowedUser: env.WECHATBOT_ALLOWED_USER?.trim() || '',
-    codexCommand: env.CODEX_COMMAND?.trim() || 'codex',
-    codexModel: env.CODEX_MODEL?.trim() || 'gpt-5.6-luna',
-    codexReasoningEffort: env.CODEX_REASONING_EFFORT?.trim() || 'max',
-    codexFast: booleanEnvValue(env.CODEX_FAST, false),
-    controlModel: env.CONTROL_MODEL?.trim() || env.CODEX_MODEL?.trim() || 'gpt-5.6-luna',
-    controlReasoningEffort: env.CONTROL_REASONING_EFFORT?.trim() || env.CODEX_REASONING_EFFORT?.trim() || 'max',
-    codexEndpoint: env.CODEX_APP_ENDPOINT?.trim() || 'ws://127.0.0.1:45037',
-    idleTimeoutMs: numberEnvValue(env.WECHATBOT_IDLE_TIMEOUT_MS, 2 * 60 * 60_000),
-    pageTtlMs: numberEnvValue(env.WECHATBOT_PAGE_TTL_MS, 24 * 60 * 60_000),
-    sharePageBaseUrl: env.SHARE_PAGE_BASE_URL?.trim() || '',
-    cloudflaredCommand:
-      env.CLOUDFLARED_COMMAND?.trim() ||
-      (existsSync(localCloudflared) ? localCloudflared : 'cloudflared'),
-    chatChunkSize: numberEnvValue(env.WECHATBOT_CHAT_CHUNK_SIZE, 1200),
-    controlTimeoutMs: numberEnvValue(env.WECHATBOT_CONTROL_TIMEOUT_MS, 30 * 60_000),
-    bindingHistoryLimit: numberEnvValue(env.WECHATBOT_BINDING_HISTORY_LIMIT, 5),
-    pollTimeoutMs: numberEnvValue(env.WECHATBOT_POLL_TIMEOUT_MS, 35_000),
+    allowedUser: firstText(userConfig.allowedUser, env.WECHATBOT_ALLOWED_USER) || '',
+    codexCommand: firstText(userConfig.codexCommand, env.CODEX_COMMAND) || 'codex',
+    codexModel,
+    codexReasoningEffort,
+    codexFast: booleanValue(env.CODEX_FAST, userConfig.codexFast, false),
+    controlModel: firstText(userConfig.controlModel, env.CONTROL_MODEL, codexModel) || '',
+    controlReasoningEffort: firstText(userConfig.controlReasoningEffort, env.CONTROL_REASONING_EFFORT, codexReasoningEffort) || '',
+    codexEndpoint: firstText(env.CODEX_APP_ENDPOINT) || 'ws://127.0.0.1:45037',
+    idleTimeoutMs: numberValue(env.WECHATBOT_IDLE_TIMEOUT_MS, undefined, 2 * 60 * 60_000),
+    pageTtlMs: numberValue(env.WECHATBOT_PAGE_TTL_MS, userConfig.pageTtlMs, 24 * 60 * 60_000),
+    sharePageBaseUrl: firstText(userConfig.sharePageBaseUrl, env.SHARE_PAGE_BASE_URL) || '',
+    cloudflaredCommand: firstText(userConfig.cloudflaredCommand, env.CLOUDFLARED_COMMAND) || localCloudflared || 'cloudflared',
+    chatChunkSize: numberValue(env.WECHATBOT_CHAT_CHUNK_SIZE, undefined, 1200),
+    controlTimeoutMs: numberValue(env.WECHATBOT_CONTROL_TIMEOUT_MS, undefined, 30 * 60_000),
+    bindingHistoryLimit: numberValue(env.WECHATBOT_BINDING_HISTORY_LIMIT, undefined, 5),
+    pollTimeoutMs: numberValue(env.WECHATBOT_POLL_TIMEOUT_MS, undefined, 35_000),
   };
 }
 
-function numberEnvValue(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const value = Number(raw);
+/** Create the only file most users ever need to see. */
+export async function ensureConfigFile(config: AppConfig): Promise<void> {
+  if (existsSync(config.configFile)) return;
+  await mkdir(path.dirname(config.configFile), { recursive: true });
+  const initial: UserConfig = {
+    version: 1,
+    defaultCwd: config.defaultCwd,
+    ...(config.dataDir !== path.dirname(config.configFile) ? { dataDir: config.dataDir } : {}),
+  };
+  try {
+    await writeFile(config.configFile, `${JSON.stringify(initial, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code) : '';
+    if (code !== 'EEXIST') throw error;
+  }
+}
+
+function readUserConfig(file: string): UserConfig {
+  if (!existsSync(file)) return {};
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('must be a JSON object');
+    return value as UserConfig;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`无法读取配置文件 ${file}：${detail}`);
+  }
+}
+
+function firstText(...values: Array<string | undefined | null>): string | undefined {
+  return values.map((value) => value?.trim()).find((value): value is string => Boolean(value));
+}
+
+function numberValue(raw: string | undefined, configured: number | undefined, fallback: number): number {
+  const candidate = configured ?? raw?.trim();
+  if (candidate === undefined || candidate === '') return fallback;
+  const value = Number(candidate);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function booleanEnvValue(raw: string | undefined, fallback: boolean): boolean {
+function booleanValue(raw: string | undefined, configured: boolean | undefined, fallback: boolean): boolean {
+  if (configured !== undefined) return configured;
   const value = raw?.trim().toLowerCase();
   if (!value) return fallback;
   if (['1', 'true', 'yes', 'on'].includes(value)) return true;

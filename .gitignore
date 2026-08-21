@@ -6,5 +6,5 @@ dist/
 !.env.example
 *.log
 runtime/
-# Install cloudflared separately or provide CLOUDFLARED_COMMAND; keep any local binary out of commits.
+# Install cloudflared separately; keep any local binary out of commits.
 bin/cloudflared

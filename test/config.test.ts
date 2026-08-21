@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config.js';
 
@@ -32,4 +34,24 @@ test('uses the repository directory as the portable discovery default', () => {
 
   assert.deepEqual(config.searchRoots, [projectRoot]);
   assert.equal(config.defaultCwd, projectRoot);
+});
+
+test('reads the small user config file without requiring environment variables', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'wecode-config-'));
+  const configFile = path.join(home, '.wecode', 'config.json');
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(configFile, JSON.stringify({
+    version: 1,
+    defaultCwd: '/workspace/projects/demo',
+    searchRoots: ['/workspace/projects'],
+    allowedUser: 'wx-user',
+  }));
+
+  const config = loadConfig({}, '/workspace/wechatbot', { userHome: home });
+
+  assert.equal(config.configFile, configFile);
+  assert.equal(config.dataDir, path.join(home, '.wecode'));
+  assert.equal(config.defaultCwd, '/workspace/projects/demo');
+  assert.deepEqual(config.searchRoots, ['/workspace/projects']);
+  assert.equal(config.allowedUser, 'wx-user');
 });

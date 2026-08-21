@@ -1,10 +1,11 @@
-import { execFile as execFileCallback, spawn, type ChildProcess } from 'node:child_process';
+import { execFile as execFileCallback, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import type { AppConfig } from './config.js';
 import type { SessionLaunchOptions, ThreadSnapshot, ThreadSummary } from './model.js';
+import { codexProcessError, spawnCodex } from './process.js';
 import type { ExternalWriterRelease } from './session-adapter.js';
 
 const execFile = promisify(execFileCallback);
@@ -380,7 +381,14 @@ export class CodexAppServer {
     if (await endpointReady(this.config.codexEndpoint)) return;
 
     if (this.process && !this.process.killed && this.process.exitCode === null) {
-      await this.waitForEndpoint(this.process);
+      const child = this.process;
+      try {
+        await this.waitForEndpoint(child);
+      } catch (error) {
+        if (this.process === child) this.process = null;
+        if (!child.killed && child.exitCode === null) child.kill('SIGTERM');
+        throw error;
+      }
       return;
     }
 
@@ -395,27 +403,48 @@ export class CodexAppServer {
       '-c',
       'service_tier=null',
     ];
-    const child = spawn(this.config.codexCommand, args, {
+    const child = spawnCodex(this.config.codexCommand, args, {
       cwd: this.config.homeDir,
       env: { ...process.env },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
+    let startupStderr = '';
     child.stderr?.on('data', (chunk) => {
       const message = String(chunk).trim();
+      startupStderr = `${startupStderr}${String(chunk)}`.slice(-8_000);
       if (message) process.stderr.write(`[codex-app-server] ${message}\n`);
     });
     this.process = child;
-    await this.waitForEndpoint(child);
+    try {
+      await this.waitForEndpoint(child, () => startupStderr);
+    } catch (error) {
+      if (this.process === child) this.process = null;
+      if (!child.killed && child.exitCode === null) child.kill('SIGTERM');
+      throw error;
+    }
   }
 
-  private async waitForEndpoint(child: ChildProcess): Promise<void> {
+  private async waitForEndpoint(child: ChildProcess, getStderr: () => string = () => ''): Promise<void> {
     const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`codex app-server exited with code ${child.exitCode}`);
-      if (await endpointReady(this.config.codexEndpoint)) return;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    let startError: unknown;
+    const onError = (error: Error) => {
+      startError = error;
+    };
+    child.once('error', onError);
+    try {
+      while (Date.now() < deadline) {
+        if (startError) throw codexProcessError(this.config.codexCommand, startError, getStderr());
+        if (child.exitCode !== null) {
+          throw codexProcessError(this.config.codexCommand, { code: child.exitCode }, getStderr());
+        }
+        if (await endpointReady(this.config.codexEndpoint)) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (startError) throw codexProcessError(this.config.codexCommand, startError, getStderr());
+      throw new Error(`codex app-server endpoint was not ready: ${this.config.codexEndpoint}`);
+    } finally {
+      child.removeListener('error', onError);
     }
-    throw new Error(`codex app-server endpoint was not ready: ${this.config.codexEndpoint}`);
   }
 }
 

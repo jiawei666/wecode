@@ -1,7 +1,9 @@
+#!/usr/bin/env node
+
 import 'dotenv/config';
 import { mkdir } from 'node:fs/promises';
 import { STARTUP_HINT } from './commands.js';
-import { loadConfig } from './config.js';
+import { ensureConfigFile, loadConfig } from './config.js';
 import { BridgeApp } from './bridge.js';
 import { CodexAppServer } from './codex.js';
 import { loginWithQr, IlinkClient } from './ilink.js';
@@ -11,22 +13,17 @@ import { StateStore } from './state.js';
 async function main(): Promise<void> {
   const command = process.argv[2] || 'run';
   const config = loadConfig();
+  if (command === 'help' || command === '--help' || command === '-h') {
+    process.stdout.write('用法：wecode [login|run]\n\n首次直接运行会自动扫码登录；之后执行 wecode 即可启动。\n');
+    return;
+  }
+  await ensureConfigFile(config);
   await mkdir(config.dataDir, { recursive: true });
   const store = new StateStore(config.stateFile);
   await store.init();
 
   if (command === 'login') {
-    const result = await loginWithQr(config);
-    store.update((state) => {
-      state.token = result.token;
-      state.botId = result.botId;
-      state.baseUrl = result.baseUrl;
-      state.scannedUser = result.scannedUser;
-      state.cursor = '';
-      state.lastError = '';
-    });
-    await store.save();
-    process.stdout.write(`\n登录成功。绑定用户：${result.scannedUser || '(网关未返回用户 ID)'}\n`);
+    await login(config, store);
     return;
   }
 
@@ -35,9 +32,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!store.get().token || !store.get().botId) {
-    throw new Error('尚未登录，请先执行：npm run dev -- login');
-  }
+  if (!store.get().token || !store.get().botId) await login(config, store, true);
   const token = store.get().token;
   const ilink = new IlinkClient({ ...config, apiBase: store.get().baseUrl || config.apiBase }, token);
   const appServer = new CodexAppServer(config);
@@ -89,6 +84,21 @@ async function main(): Promise<void> {
   }
   clearInterval(reapTimer);
   await stop();
+}
+
+async function login(config: ReturnType<typeof loadConfig>, store: StateStore, continueRunning = false): Promise<void> {
+  if (continueRunning) process.stdout.write('\n首次启动，先完成一次微信扫码登录。\n');
+  const result = await loginWithQr(config);
+  store.update((state) => {
+    state.token = result.token;
+    state.botId = result.botId;
+    state.baseUrl = result.baseUrl;
+    state.scannedUser = result.scannedUser;
+    state.cursor = '';
+    state.lastError = '';
+  });
+  await store.save();
+  process.stdout.write(`\n登录成功。绑定用户：${result.scannedUser || '(网关未返回用户 ID)'}\n`);
 }
 
 main().catch((error) => {

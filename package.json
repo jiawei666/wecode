@@ -1,18 +1,50 @@
 {
-  "name": "wecode",
+  "name": "@jiawei666/wecode",
   "version": "0.1.0",
-  "private": true,
-  "description": "微信控制本地 Codex 交互会话的桥接服务",
+  "description": "用微信控制本地 Codex，并把长文案变成临时手机分享页",
   "type": "module",
+  "bin": {
+    "wecode": "dist/src/index.js"
+  },
+  "files": [
+    "dist/src",
+    "schemas",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiawei666/wecode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jiawei666/wecode/issues"
+  },
+  "homepage": "https://github.com/jiawei666/wecode#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "keywords": [
+    "codex",
+    "wechat",
+    "ilink",
+    "cli",
+    "cloudflare-tunnel"
+  ],
+  "license": "MIT",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/index.js run",
+    "clean:build": "node scripts/clean-dist.mjs",
+    "build": "npm run clean:build && tsc -p tsconfig.build.json",
+    "start": "node dist/src/index.js",
     "test": "tsx --test test/**/*.test.ts",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm test && npm run lint",
+    "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

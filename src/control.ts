@@ -1,9 +1,12 @@
+import { existsSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AppConfig } from './config.js';
 import type { ActionResponse } from './model.js';
+import { codexProcessError, spawnCodex } from './process.js';
 
 export interface ControlResult {
   action: ActionResponse;
@@ -92,7 +95,7 @@ export class ControlAgent {
 
   private async runOnce(userId: string, prompt: string, previousSessionId?: string): Promise<ControlResult> {
     const outputPath = path.join(this.config.dataDir, `control-${process.pid}-${randomBytes(6).toString('hex')}.json`);
-    const schemaPath = path.resolve(process.cwd(), 'schemas', 'control-action.json');
+    const schemaPath = resolveControlSchemaPath();
     const commonArgs = [
       '--json',
       '--output-schema',
@@ -128,6 +131,17 @@ export class ControlAgent {
   }
 }
 
+function resolveControlSchemaPath(): string {
+  const candidates = [
+    fileURLToPath(new URL('../../schemas/control-action.json', import.meta.url)),
+    fileURLToPath(new URL('../schemas/control-action.json', import.meta.url)),
+    path.resolve(process.cwd(), 'schemas', 'control-action.json'),
+  ];
+  const schemaPath = candidates.find((candidate) => existsSync(candidate));
+  if (!schemaPath) throw new Error('找不到会话管理 Agent schema：schemas/control-action.json');
+  return schemaPath;
+}
+
 interface ProcessResult {
   stdout: string;
   stderr: string;
@@ -143,7 +157,7 @@ function runProcess(
   active: Map<string, ChildProcess>,
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: process.cwd(), env: { ...process.env }, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnCodex(command, args, { cwd: process.cwd(), env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -158,24 +172,28 @@ function runProcess(
       child.kill('SIGTERM');
       finish(() => reject(new Error(`会话管理 Agent 超时（${Math.round(timeoutMs / 1000)} 秒）`)));
     }, timeoutMs);
-    child.stdout.on('data', (chunk) => {
+    child.stdout?.on('data', (chunk) => {
       stdout = cap(stdout + String(chunk), 2_000_000);
     });
-    child.stderr.on('data', (chunk) => {
+    child.stderr?.on('data', (chunk) => {
       stderr = cap(stderr + String(chunk), 200_000);
     });
     active.set(userId, child);
-    child.once('error', (error) => finish(() => reject(error)));
+    child.once('error', (error) => finish(() => reject(codexProcessError(command, error, stderr))));
     child.once('close', (code) => {
       finish(() => {
         if (code !== 0) {
           const detail = (stderr.trim() || stdout.trim()).slice(-2000);
-          reject(new Error(detail ? `会话管理 Agent exit ${code ?? 'signal'}: ${detail}` : `会话管理 Agent exit ${code ?? 'signal'}`));
+          if (code === 9009 || /not recognized as an internal or external command/i.test(detail)) {
+            reject(codexProcessError(command, { code }, detail));
+          } else {
+            reject(new Error(detail ? `会话管理 Agent exit ${code ?? 'signal'}: ${detail}` : `会话管理 Agent exit ${code ?? 'signal'}`));
+          }
         }
         else resolve({ stdout, stderr, sessionId: findSessionId(stdout) });
       });
     });
-    child.stdin.end(input);
+    child.stdin?.end(input);
   });
 }
 
