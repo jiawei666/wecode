@@ -1,6 +1,5 @@
-import path from 'node:path';
 import type { AppConfig } from './config.js';
-import { FIRST_RUN_GUIDE, HELP_TEXT, MENU_TEXT, SESSION_ROUTING_HINT, parseBridgeCommand, type BridgeCommand } from './commands.js';
+import { FIRST_RUN_GUIDE, HELP_TEXT, NO_SESSION_HINT, SESSION_ROUTING_HINT, parseBridgeCommand } from './commands.js';
 import { ControlAgent } from './control.js';
 import type { InboundMessage, IlinkClient } from './ilink.js';
 import type {
@@ -13,7 +12,7 @@ import type {
   TurnResult,
 } from './model.js';
 import { renderResponse, PagePublisher } from './render.js';
-import { buildSessionList, formatModel, formatTimestamp } from './session-display.js';
+import { formatModel, formatTimestamp } from './session-display.js';
 import { SessionManager, SessionOccupiedError } from './sessions.js';
 import { StateStore } from './state.js';
 
@@ -51,7 +50,7 @@ export class BridgeApp {
     const command = parseBridgeCommand(message.text.trim());
     const directCommand = command && command.kind !== 'control';
     if (directCommand) {
-      if (command.kind === 'stop' || command.kind === 'cancel') {
+      if (command.kind === 'stop' || command.kind === 'exit') {
         await this.handleSafely(message);
         return;
       }
@@ -110,13 +109,11 @@ export class BridgeApp {
     const expired = this.controlExpired(userId);
     if (expired) {
       this.store.clearControl(userId);
-      this.store.clearSelection(userId);
-      this.store.clearMenu(userId);
-      await this.reply(userId, '控制模式已过期；当前会话未改变。');
+      await this.reply(userId, '会话管理 Agent 已过期；当前会话未改变。');
     }
 
-    if (command?.kind === 'cancel') {
-      await this.cancel(userId);
+    if (command?.kind === 'exit') {
+      await this.exit(userId);
       return;
     }
     if (command?.kind === 'stop') {
@@ -124,27 +121,16 @@ export class BridgeApp {
       return;
     }
 
+    if (command?.kind === 'help') {
+      await this.reply(userId, HELP_TEXT);
+      return;
+    }
+    if (command?.kind === 'status') {
+      await this.sendStatus(userId);
+      return;
+    }
     if (command?.kind === 'control') {
       await this.handleControl(userId, command.text, firstRunGuideShown);
-      return;
-    }
-
-    if (command) {
-      // Every non-control local command must remain usable when the control
-      // Agent is unavailable or stuck.
-      await this.handleCommand(userId, command);
-      return;
-    }
-
-    const selectionIndex = parseSelectionIndex(text);
-    if (!this.store.getControl(userId) && selectionIndex !== undefined && this.store.getMenu(userId)) {
-      await this.handleMenuSelection(userId, selectionIndex);
-      return;
-    }
-
-    const selection = this.store.getSelection(userId);
-    if (!this.store.getControl(userId) && selection && selectionIndex !== undefined) {
-      await this.selectSession(userId, selectionIndex);
       return;
     }
 
@@ -155,166 +141,10 @@ export class BridgeApp {
 
     const binding = this.store.getBinding(userId);
     if (!binding) {
-      await this.handleControl(userId, text, firstRunGuideShown);
+      await this.reply(userId, NO_SESSION_HINT);
       return;
     }
     await this.sendToTarget(userId, text);
-  }
-
-  private async handleCommand(userId: string, command: BridgeCommand): Promise<void> {
-    if (command.kind !== 'menu') this.store.clearMenu(userId);
-    switch (command.kind) {
-      case 'menu':
-        await this.abandonControl(userId);
-        this.store.clearSelection(userId);
-        this.store.setMenu(userId, { createdAt: Date.now(), expiresAt: Date.now() + this.config.selectionTimeoutMs });
-        await this.reply(userId, MENU_TEXT);
-        return;
-      case 'help':
-        await this.reply(userId, HELP_TEXT);
-        return;
-      case 'new': {
-        await this.abandonControl(userId);
-        await this.stopBeforeSwitch(userId);
-        const result = await this.sessions.create(userId, command.cwd, launchOptions(command));
-        await this.reply(userId, this.sessionCreatedText(result.binding));
-        return;
-      }
-      case 'use': {
-        if (!command.threadId) {
-          await this.sendSessions(userId, 'recent');
-          return;
-        }
-        const index = parseSelectionIndex(command.threadId);
-        if (index !== undefined) {
-          await this.selectSession(userId, index);
-          return;
-        }
-        await this.abandonControl(userId);
-        await this.stopBeforeSwitch(userId);
-        await this.useSession(userId, command.threadId, launchOptions(command));
-        return;
-      }
-      case 'sessions':
-        await this.sendSessions(userId, command.scope);
-        return;
-      case 'status':
-        await this.sendStatus(userId);
-        return;
-      case 'back': {
-        const previous = this.store.getBindingHistory(userId)[0];
-        if (!previous) {
-          await this.reply(userId, '没有上一个会话。');
-          return;
-        }
-        await this.abandonControl(userId);
-        await this.stopBeforeSwitch(userId);
-        await this.useSession(userId, previous.threadId, launchOptions(previous), previous.cwd);
-        return;
-      }
-      case 'control':
-      case 'cancel':
-      case 'stop':
-        return;
-    }
-  }
-
-  private async handleMenuSelection(userId: string, index: number): Promise<void> {
-    const menu = this.store.getMenu(userId);
-    if (!menu || menu.expiresAt <= Date.now()) {
-      this.store.clearMenu(userId);
-      await this.reply(userId, '菜单已过期，请发送“菜单”。');
-      return;
-    }
-
-    switch (index) {
-      case 1:
-        await this.handleCommand(userId, { kind: 'new' });
-        return;
-      case 2:
-        await this.sendSessions(userId, 'recent');
-        return;
-      case 3:
-        await this.sendSessions(userId, 'all');
-        return;
-      case 4:
-        await this.handleCommand(userId, { kind: 'status' });
-        return;
-      case 5:
-        await this.handleCommand(userId, { kind: 'back' });
-        return;
-      case 6:
-        await this.stop(userId);
-        return;
-      case 7:
-        await this.cancel(userId);
-        return;
-      default:
-        await this.reply(userId, '请回复 1-7。');
-    }
-  }
-
-  private async selectSession(userId: string, index: number): Promise<void> {
-    const selection = this.store.getSelection(userId);
-    if (!selection || selection.expiresAt <= Date.now()) {
-      this.store.clearSelection(userId);
-      await this.reply(userId, '序号已过期，请发送“会话”。');
-      return;
-    }
-    const item = selection.items[index - 1];
-    if (!item) {
-      await this.reply(userId, `没有第 ${index} 个会话，请重发“会话”。`);
-      return;
-    }
-    if (item.cli !== 'codex') throw new Error('当前版本还未接入 Claude Code 适配器');
-    await this.abandonControl(userId);
-    await this.stopBeforeSwitch(userId);
-    await this.reply(userId, '正在恢复会话……');
-    await this.useSession(userId, item.threadId, launchOptions(item), item.cwd);
-  }
-
-  private async sendSessions(
-    userId: string,
-    scope: 'recent' | 'here' | 'all' | 'full',
-    requestedCwd?: string,
-  ): Promise<void> {
-    this.store.clearMenu(userId);
-    const current = this.store.getBinding(userId);
-    if (scope === 'here' && !requestedCwd && !current?.cwd && !this.config.defaultCwd) {
-      await this.reply(userId, '没有项目目录，无法查看当前项目会话。');
-      return;
-    }
-    const cwd = requestedCwd || (scope === 'here' ? current?.cwd || this.config.defaultCwd : undefined);
-    let list = await this.sessions.list(cwd);
-    if (scope === 'recent') {
-      list = list.filter((thread) => thread.id === current?.threadId || this.isInSearchRoots(thread.cwd));
-    }
-    const display = buildSessionList(list, this.config, {
-      current,
-      notes: this.store.get().sessionNotes,
-      fullIds: scope === 'full',
-      limit: scope === 'all' || scope === 'full' ? Math.max(list.length, this.config.sessionListLimit) : this.config.sessionListLimit,
-    });
-    if (!display.items.length) {
-      this.store.clearSelection(userId);
-      await this.reply(userId, display.text);
-      return;
-    }
-    this.store.setSelection(userId, {
-      createdAt: Date.now(),
-      expiresAt: Date.now() + this.config.selectionTimeoutMs,
-      items: display.items,
-    });
-    await this.reply(userId, display.text);
-  }
-
-  private isInSearchRoots(cwd?: string): boolean {
-    if (!cwd) return false;
-    const resolved = path.resolve(cwd);
-    return this.config.searchRoots.some((root) => {
-      const base = path.resolve(root);
-      return resolved === base || resolved.startsWith(`${base}${path.sep}`);
-    });
   }
 
   private async handleControl(userId: string, text: string, skipControlIntro = false): Promise<void> {
@@ -334,11 +164,11 @@ export class BridgeApp {
       ? `\n上一个绑定（用户说“返回上一个”时使用）：thread_id=${previous.threadId}\ncwd=${previous.cwd}`
       : '';
     const context = `${currentContext}${previousContext}`;
-    const feedback = control.executionFeedback ? `\n上一次桥接层执行结果：${control.executionFeedback}` : '';
+    const feedback = control.executionFeedback ? `\n上一次 wecode 系统执行结果：${control.executionFeedback}` : '';
     const pendingTakeover = control.pendingTakeover
-      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。安全接管只会通过 Codex App Server 请求中断活动 turn、等待会话空闲并恢复，不会终止外部 CLI、IDE 或桌面客户端。`
+      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先通过 Codex App Server 中断活动 turn；若外部客户端仍持有该 thread 锁，只向精确匹配的外部 Codex 进程发出退出信号，不删除锁文件，也不触碰其他进程。`
       : '';
-    const prompt = `${text.trim()}\n\n[桥接层上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
+    const prompt = `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
 
     await this.reply(userId, '处理中……');
     try {
@@ -384,7 +214,7 @@ export class BridgeApp {
       }
       const feedbackText = controlErrorText(error);
       if (latest) this.store.setControl(userId, { ...latest, lastActivityAt: Date.now(), executionFeedback: feedbackText });
-      await this.reply(userId, `${feedbackText}\n可继续补充，或发送“取消”。`, { source: 'bridge' });
+      await this.reply(userId, `${feedbackText}\n可继续补充，或发送“退出”。`, { source: 'bridge' });
     }
   }
 
@@ -438,7 +268,7 @@ export class BridgeApp {
       }
       case 'reply':
       case 'ask':
-        await this.reply(userId, action.text || '控制操作已完成。', {
+        await this.reply(userId, action.text || '会话管理操作已完成。', {
           title: action.title,
           presentation: action.presentation,
           source: 'control',
@@ -457,7 +287,6 @@ export class BridgeApp {
     if (identifier.startsWith('cc:')) throw new Error('当前版本还未接入 Claude Code 适配器');
     const threadId = await this.sessions.resolveThreadId(identifier);
     const result = await this.sessions.use(userId, threadId, requestedCwd, options, takeover);
-    this.store.clearSelection(userId);
     await this.reply(userId, this.switchedText(result.binding));
   }
 
@@ -565,7 +394,7 @@ export class BridgeApp {
     const status = await this.sessions.status(userId);
     const control = this.store.getControl(userId);
     const mode = control
-      ? `控制：${this.controlAgent.isRunning(userId) ? '处理中' : '等待指令'}`
+      ? `会话管理 Agent：${this.controlAgent.isRunning(userId) ? '处理中' : '等待指令'}`
       : '目标 Codex';
     const queue = this.queued.get(userId)?.length ?? 0;
     if (!status.binding) {
@@ -579,43 +408,41 @@ export class BridgeApp {
   }
 
   private async stop(userId: string): Promise<void> {
-    this.store.clearMenu(userId);
     const hasControl = Boolean(this.store.getControl(userId));
     let controlStopped = false;
     if (hasControl) controlStopped = await this.controlAgent.interrupt(userId).catch(() => false);
     this.queued.delete(userId);
     const targetStopped = await this.sessions.stop(userId);
     if (controlStopped && targetStopped) {
-      await this.reply(userId, '控制和 Codex 任务已停止。');
+      await this.reply(userId, '会话管理 Agent 和 Codex 任务已停止。');
     } else if (controlStopped) {
-      await this.reply(userId, '控制已停止；Codex 当前空闲。');
+      await this.reply(userId, '会话管理 Agent 已停止；Codex 当前空闲。');
     } else if (targetStopped) {
       await this.reply(userId, 'Codex 任务已停止。');
     } else if (hasControl) {
-      await this.reply(userId, '控制和 Codex 都没有运行中的任务。');
+      await this.reply(userId, '会话管理 Agent 和 Codex 都没有运行中的任务。');
     } else {
       await this.reply(userId, '当前没有运行中的任务。');
     }
   }
 
-  private async cancel(userId: string): Promise<void> {
-    this.store.clearMenu(userId);
+  private async exit(userId: string): Promise<void> {
     this.queued.delete(userId);
     if (this.store.getControl(userId)) {
       await this.controlAgent.interrupt(userId).catch(() => false);
       this.leaveControl(userId);
-      await this.reply(userId, '已退出控制模式。');
+      await this.reply(userId, '已退出会话管理 Agent。');
       return;
     }
     const binding = this.store.getBinding(userId);
     if (!binding) {
-      await this.reply(userId, '当前没有控制流程或会话。');
+      await this.reply(userId, '当前没有会话管理流程或会话。');
       return;
     }
     await this.sessions.release(userId);
     this.store.pushBindingHistory(userId, binding, this.config.bindingHistoryLimit);
     this.store.clearBinding(userId);
-    await this.reply(userId, '已退出当前会话；历史仍保留，可用 /ctrl 恢复。');
+    await this.reply(userId, '已退出当前会话；历史仍保留。');
   }
 
   private async stopBeforeSwitch(userId: string): Promise<void> {
@@ -635,7 +462,7 @@ export class BridgeApp {
     }
     const created = { startedAt: Date.now(), lastActivityAt: Date.now() };
     this.store.setControl(userId, created);
-    if (announce) await this.reply(userId, '已进入控制模式；发送“取消”退出。');
+    if (announce) await this.reply(userId, '已进入会话管理 Agent；发送“退出”离开。');
     return created;
   }
 
@@ -643,7 +470,12 @@ export class BridgeApp {
     const current = this.store.getControl(userId);
     const now = Date.now();
     if (error.takeoverAttempted) {
-      const message = '安全接管失败：目标仍被外部客户端占用，未终止外部进程。';
+      const message = error.running
+        ? '安全接管失败：外部客户端仍有活动任务，未能安全释放目标会话。'
+        : '安全接管失败：任务已空闲，但未能释放持有目标锁的外部客户端。';
+      const nextStep = error.running
+        ? '请先在外部客户端停止任务并释放会话后重试；'
+        : '请先退出外部 Codex 客户端或关闭该会话后重试；';
       if (current) {
         const { pendingTakeover: _pendingTakeover, ...withoutPendingTakeover } = current;
         this.store.setControl(userId, {
@@ -652,7 +484,7 @@ export class BridgeApp {
           executionFeedback: message,
         });
       }
-      await this.reply(userId, `${message}\n请先结束外部任务后重试；可发送 /cancel。`, { source: 'bridge' });
+      await this.reply(userId, `${message}\n${nextStep}可发送“退出”。`, { source: 'bridge' });
       return;
     }
 
@@ -671,20 +503,13 @@ export class BridgeApp {
     });
     await this.reply(
       userId,
-      `${message}\n回复“确认接管”进行安全接管；不会杀掉外部客户端。\n否则回复“取消”。`,
+      `${message}\n回复“确认接管”进行安全接管；只会释放持有该目标锁的外部客户端。\n否则回复“退出”。`,
       { source: 'bridge' },
     );
   }
 
   private leaveControl(userId: string): void {
     this.store.clearControl(userId);
-    this.store.clearSelection(userId);
-    this.store.clearMenu(userId);
-  }
-
-  private async abandonControl(userId: string): Promise<void> {
-    if (this.store.getControl(userId)) await this.controlAgent.interrupt(userId).catch(() => false);
-    this.leaveControl(userId);
   }
 
   private controlExpired(userId: string): boolean {
@@ -780,21 +605,21 @@ function decorateReply(text: string, source: ReplySource): string {
   const value = text.trim();
   if (source === 'codex') return value;
   if (source === 'guide') return `> **wecode 使用指南**\n\n${value}`;
-  if (source === 'control') return `> **控制 Agent**\n\n${value}`;
+  if (source === 'control') return `> **会话管理 Agent**\n\n${value}`;
   return value
     .split('\n')
-    .map((line, index) => index === 0 ? `> **桥接层** · ${line}` : `> ${line}`)
+    .map((line, index) => index === 0 ? `> **wecode 系统** · ${line}` : `> ${line}`)
     .join('\n');
 }
 
 function controlErrorText(error: unknown): string {
   const message = errorMessage(error);
-  if (/interrupt|signal/i.test(message)) return '控制 Agent 已中断。';
-  if (/no rollout found|thread not found/i.test(message)) return '控制会话无法恢复；控制模式仍保留。';
+  if (/interrupt|signal/i.test(message)) return '会话管理 Agent 已中断。';
+  if (/no rollout found|thread not found/i.test(message)) return '会话管理 Agent 会话无法恢复；当前流程仍保留。';
   if (/thread-store conflict|active writer|already in use|being used|occupied|locked|another client|其他 Codex 客户端|原生终端占用/i.test(message)) {
     return '目标会话被占用；回复“确认接管”安全恢复，或先结束外部任务。';
   }
-  return `控制 Agent 暂时没有完成这次请求：${message.slice(0, 240)}`;
+  return `会话管理 Agent 暂时没有完成这次请求：${message.slice(0, 240)}`;
 }
 
 function userFacingError(error: unknown): string {
@@ -803,7 +628,7 @@ function userFacingError(error: unknown): string {
     return '目标会话被占用；回复“确认接管”，或先结束外部任务。';
   }
   if (/no rollout found|thread not found/i.test(message)) {
-    return '当前会话已失效，请发送 /ctrl 重新创建或恢复。';
+    return '当前会话已失效，请说“帅哥，帮我重新创建或恢复”。';
   }
   if (/项目目录不能为空|项目目录不存在|没有当前 Codex 会话|会话 ID|Claude Code/i.test(message)) return message;
   return '处理请求时遇到内部错误，请稍后重试；详细信息已记录在本地日志。';
@@ -812,17 +637,4 @@ function userFacingError(error: unknown): string {
 function isTakeoverConfirmation(text: string): boolean {
   const normalized = text.trim().toLowerCase().replace(/[\s\u3000“”"‘’'。.!！？?，,、]/g, '');
   return new Set(['确认接管', '确定接管', '继续接管', '同意接管', '确认', 'confirm', 'yes', 'y']).has(normalized);
-}
-
-function parseSelectionIndex(value: string): number | undefined {
-  const normalized = value.trim().replace(/[\s\u3000]/g, '');
-  const numeric = /^(?:第)?(\d+)(?:个)?$/.exec(normalized)?.[1];
-  if (numeric) {
-    const index = Number(numeric);
-    return Number.isSafeInteger(index) && index > 0 ? index : undefined;
-  }
-  const chinese = /^(?:第)?([一二三四五六七八九十])(?:个)?$/.exec(normalized)?.[1];
-  if (!chinese) return undefined;
-  const index = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }[chinese];
-  return index;
 }

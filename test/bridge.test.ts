@@ -34,14 +34,21 @@ test('shows the first-run guide once without swallowing the initial command', as
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
 
   try {
-    await bridge.handle(message('/help', 'onboarding-1'));
+    await bridge.handle(message('帮助', 'onboarding-1'));
     assert.match(sent[0] || '', /欢迎使用 wecode/);
     assert.match(sent[0] || '', /wecode 使用指南/);
-    assert.match(sent[0] || '', /直接发消息：发送给当前 Codex/);
-    assert.match(sent.at(-1) || '', /微信 Codex 快捷操作/);
+    assert.match(sent[0] || '', /帅哥/);
+    assert.match(sent[0] || '', /靓仔/);
+    assert.match(sent[0] || '', /小哥哥/);
+    assert.match(sent[0] || '', /哥哥/);
+    assert.match(sent[0] || '', /大哥/);
+    assert.match(sent[0] || '', /老哥/);
+    assert.match(sent[0] || '', /会话管理 Agent/);
+    assert.match(sent.at(-1) || '', /主要入口/);
+    assert.match(sent.at(-1) || '', /最新的 5 个会话/);
     assert.equal(store.get().onboardingShown.user, true);
 
-    await bridge.handle(message('/help', 'onboarding-2'));
+    await bridge.handle(message('帮助', 'onboarding-2'));
     assert.equal(sent.filter((text) => text.includes('欢迎使用 wecode')).length, 1);
   } finally {
     await bridge.close();
@@ -66,10 +73,10 @@ test('retries the first-run guide when its delivery fails', async () => {
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
 
   try {
-    await bridge.handle(message('/help', 'onboarding-retry-1'));
+    await bridge.handle(message('帮助', 'onboarding-retry-1'));
     assert.equal(store.hasOnboardingShown('user'), false);
 
-    await bridge.handle(message('/help', 'onboarding-retry-2'));
+    await bridge.handle(message('帮助', 'onboarding-retry-2'));
     assert.equal(store.hasOnboardingShown('user'), true);
   } finally {
     await bridge.close();
@@ -78,35 +85,28 @@ test('retries the first-run guide when its delivery fails', async () => {
   }
 });
 
-test('runs legacy and Chinese session commands locally without the control Agent', async () => {
+test('keeps four local commands while honorifics enter the session-management Agent', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-local-command-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   const sent: string[] = [];
+  const localCalls: string[] = [];
+  let controlRuns = 0;
   const fakeControl = {
-    run: async () => { throw new Error('Control Agent should not receive local commands'); },
+    run: async () => {
+      controlRuns += 1;
+      return { action: { action: 'reply' as const, text: '会话管理 Agent 已响应。' }, sessionId: 'control-thread' };
+    },
     interrupt: async () => false,
     consumeInterrupted: () => false,
     isRunning: () => false,
     close: async () => undefined,
   } as unknown as ControlAgent;
-  const first = { id: 'first-thread', cwd: directory, preview: '第一个摘要', updatedAt: 1_700_000_100, cli: 'codex' as const };
-  const second = { id: 'second-thread', cwd: directory, preview: '第二个摘要', updatedAt: 1_700_000_000, cli: 'codex' as const };
   const fakeSessions = {
-    list: async () => [first, second],
+    list: async () => [],
     status: async (userId: string) => ({ binding: store.getBinding(userId), running: false }),
-    resolveThreadId: async (identifier: string) => identifier,
-    use: async (userId: string, threadId: string, cwd?: string) => {
-      const binding: SessionBinding = {
-        threadId,
-        cwd: cwd || directory,
-        cli: 'codex',
-        createdAt: Date.now(),
-        lastActivityAt: Date.now(),
-      };
-      store.setBinding(userId, binding);
-      return { binding };
-    },
+    stop: async () => { localCalls.push('stop'); return false; },
+    release: async () => { localCalls.push('release'); },
     close: async () => undefined,
   } as unknown as SessionManager;
   const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
@@ -120,23 +120,30 @@ test('runs legacy and Chinese session commands locally without the control Agent
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('/sessions', '1'));
-    assert.match(sent.at(-1) || '', /Codex 会话/);
-    assert.match(sent.at(-1) || '', /第一个摘要/);
+    await bridge.handle(message('帮助', 'local-help'));
+    await bridge.handle(message('状态', 'local-status'));
+    await bridge.handle(message('停止', 'local-stop'));
+    assert.deepEqual(localCalls, ['stop']);
     assert.equal(store.getControl('user'), undefined);
 
-    await bridge.handle(message('/切换 2', '2'));
-    assert.equal(store.getBinding('user')?.threadId, 'second-thread');
-    assert.match(sent.at(-1) || '', /已切换会话/);
+    store.setBinding('user', {
+      threadId: 'thread-a',
+      cwd: directory,
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+    });
+    await bridge.handle(message('退出', 'local-exit'));
+    assert.deepEqual(localCalls, ['stop', 'release']);
+    assert.equal(store.getBinding('user'), undefined);
 
-    await bridge.handle(message('菜单', 'menu-1'));
-    assert.match(sent.at(-1) || '', /1\. 新建/);
-    assert.ok(store.getMenu('user'));
+    await bridge.handle(message('帮我新建一个会话', 'ordinary-without-session'));
+    assert.match(sent.at(-1) || '', /试试说“帅哥/);
+    assert.equal(controlRuns, 0);
 
-    await bridge.handle(message('2', 'menu-2'));
-    assert.match(sent.at(-1) || '', /Codex 会话/);
-    assert.equal(store.getMenu('user'), undefined);
-    assert.ok(store.getSelection('user'));
+    await bridge.handle(message('帅哥，帮我列出会话', 'wake-control'));
+    assert.match(sent.at(-1) || '', /会话管理 Agent/);
+    assert.equal(store.getControl('user')?.sessionId, 'control-thread');
+    assert.equal(controlRuns, 1);
   } finally {
     await bridge.close();
     await store.save();
@@ -164,7 +171,7 @@ test('accepts continuous WeChat input and drains it in order after each turn', a
   };
   store.setBinding('user', binding);
   const fakeControl = {
-    run: async () => { throw new Error('Control Agent should not receive target messages'); },
+    run: async () => { throw new Error('Session-management Agent should not receive target messages'); },
     interrupt: async () => false,
     consumeInterrupted: () => false,
     isRunning: () => false,
@@ -244,7 +251,7 @@ test('steers the active Codex turn before falling back to the queue', async () =
   };
   store.setBinding('user', binding);
   const fakeControl = {
-    run: async () => { throw new Error('Control Agent should not receive target messages'); },
+    run: async () => { throw new Error('Session-management Agent should not receive target messages'); },
     interrupt: async () => false,
     consumeInterrupted: () => false,
     isRunning: () => false,
@@ -274,7 +281,7 @@ test('steers the active Codex turn before falling back to the queue', async () =
   }
 });
 
-test('lets the control Agent format lists and resolves a natural-language selection', async () => {
+test('lets the session-management Agent format lists and resolve a natural-language selection', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-list-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
@@ -324,8 +331,8 @@ test('lets the control Agent format lists and resolves a natural-language select
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('/ctrl 找 agency-cloud-core 最近 5 个会话', 'control-1'));
-    assert.match(sent.at(-1) || '', /> \*\*控制 Agent\*\*/);
+    await bridge.handle(message('帅哥，帮我找 agency-cloud-core 最近 5 个会话', 'control-1'));
+    assert.match(sent.at(-1) || '', /> \*\*会话管理 Agent\*\*/);
     assert.match(sent.at(-1) || '', /第一个摘要/);
     assert.doesNotMatch(sent.at(-1) || '', /target-thread|gpt-5/);
     assert.ok(store.getControl('user'));
@@ -381,7 +388,7 @@ test('requires explicit confirmation before safely taking over an occupied Codex
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('/ctrl 切换到 occupied-thread', 'conflict-1'));
+    await bridge.handle(message('帅哥，帮我切换到 occupied-thread', 'conflict-1'));
     assert.match(sent.at(-1) || '', /外部客户端/);
     assert.match(sent.at(-1) || '', /安全接管/);
     assert.match(sent.at(-1) || '', /确认接管/);
@@ -393,6 +400,55 @@ test('requires explicit confirmation before safely taking over an occupied Codex
     assert.equal(useCount, 2);
     assert.equal(store.getBinding('user')?.threadId, 'occupied-thread');
     assert.equal(store.getControl('user'), undefined);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('explains when an idle external client still holds the session lock', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-idle-lock-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const targetCwd = path.join(directory, 'agency-cloud-core');
+  const fakeControl = {
+    run: async () => ({
+      action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd },
+      sessionId: 'control-thread',
+    }),
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    status: async () => ({ running: false }),
+    list: async () => [{ id: 'occupied-thread', cwd: targetCwd, preview: '空闲会话', updatedAt: 1_700_000_000, cli: 'codex' as const }],
+    resolveThreadId: async (identifier: string) => identifier,
+    use: async (_userId: string, _threadId: string, _cwd?: string, _options?: unknown, takeover = false) => {
+      if (!takeover) throw new SessionOccupiedError('occupied-thread', targetCwd);
+      throw new SessionOccupiedError(
+        'occupied-thread',
+        targetCwd,
+        false,
+        '目标任务已空闲，但外部客户端仍保持会话占用',
+        true,
+      );
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('帅哥，帮我切换到 occupied-thread', 'idle-lock-1'));
+    await bridge.handle(message('确认接管', 'idle-lock-2'));
+    assert.match(sent.at(-1) || '', /任务已空闲/);
+    assert.match(sent.at(-1) || '', /退出外部 Codex 客户端/);
+    assert.doesNotMatch(sent.at(-1) || '', /结束外部任务后重试/);
   } finally {
     await bridge.close();
     await store.save();

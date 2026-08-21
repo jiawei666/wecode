@@ -5,11 +5,11 @@
 
 ## 结论摘要
 
-wecode 是一个独立的 Node.js/TypeScript 桥接服务，通过微信 iLink 控制本机 Codex 交互会话。当前已经打通了“微信长轮询 → 消息路由 → 控制 Agent 或 Codex App Server → 微信回复 → 长报告分享页”的第一版纵向链路，代码规模适中，模块边界清楚，自动化校验通过。
+wecode 是一个独立的 Node.js/TypeScript 桥接服务，通过微信 iLink 控制本机 Codex 交互会话。当前已经打通了“微信长轮询 → 消息路由 → 会话管理 Agent 或 Codex App Server → 微信回复 → 长报告分享页”的第一版纵向链路，代码规模适中，模块边界清楚，自动化校验通过。
 
 项目目前适合个人本机工具或受控内测，不适合直接作为多用户或公网生产服务。最重要的原因是：
 
-1. 控制 Agent 和目标 Codex 默认使用 approvalPolicy=never、danger-full-access，远程消息可以驱动本机执行高权限操作。
+1. 会话管理 Agent 和目标 Codex 默认使用 approvalPolicy=never、danger-full-access，远程消息可以驱动本机执行高权限操作。
 2. 白名单配置和二维码返回用户 ID 同时为空时，桥接层不会拒绝消息，访问控制存在 fail-open 路径。
 3. 工作目录只校验“是否存在且为目录”，没有限制在受控根目录内。
 
@@ -22,7 +22,7 @@ wecode 是一个独立的 Node.js/TypeScript 桥接服务，通过微信 iLink �
 - README、环境变量示例、package.json、tsconfig.json 和 lockfile。
 - src/ 下 12 个 TypeScript 源文件。
 - test/ 下 7 个测试文件，共 34 个测试用例。
-- 控制 Agent 的 JSON Schema 和 cloudflared 调用配置。
+- 会话管理 Agent 的 JSON Schema 和 cloudflared 调用配置。
 - 当前已有的 PROJECT_SUMMARY.md 与 docs/project-summary-research.md，并以当前源码和实际命令结果为准重新核验。
 
 仓库根目录不是 Git 工作树，也不存在 .codegraph/，因此本报告不包含提交历史、分支差异、变更归属或 CodeGraph 调用图分析。未执行真实微信 QR 登录、真实 iLink 联调、公网 Cloudflare Tunnel 访问或真实 Codex 工作流；这些部分的结论来自源码审查和模拟测试。
@@ -70,7 +70,7 @@ src/index.ts 根据命令执行 login 或 run。login 通过二维码取得 bot 
 
 ### 消息路由
 
-BridgeApp 先检查允许用户、保存 context token、进行消息去重，再按顺序处理菜单/高置信度中文短词、“控制：……”、/ctrl、斜杠兜底命令和普通文本，见 [src/bridge.ts#L41](src/bridge.ts#L41)。菜单与会话列表的序号绑定短期用户状态；有绑定时，执行中的普通消息优先通过 App Server steer 当前 turn，无法 steer 时进入 FIFO 队列并在完成后自动续接；没有当前 thread 绑定时，普通文本进入控制 Agent。
+BridgeApp 先检查允许用户、保存 context token、进行消息去重，再处理状态、停止、退出、帮助四个本地命令、唤醒词和普通文本，见 [src/bridge.ts#L41](src/bridge.ts#L41)。需要查找、新建、切换或恢复会话时，只有“帅哥、靓仔、小哥哥、哥哥、大哥、老哥”等唤醒词会进入会话管理 Agent；没有当前 thread 绑定且未使用唤醒词时只返回提示。有绑定时，执行中的普通消息优先通过 App Server steer 当前 turn，无法 steer 时进入 FIFO 队列并在完成后自动续接。
 
 ### 会话与 App Server
 
@@ -78,9 +78,9 @@ SessionManager 负责创建、恢复、列出 thread、启动/中断 turn、订�
 
 新 thread 在首条 turn 之前标记为 hasRollout=false；首条消息成功启动后将绑定标记为已产生 rollout。这是对 Codex 新 thread 生命周期的针对性处理。
 
-### 控制 Agent
+### 会话管理 Agent
 
-ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_session、switch_session、list_sessions、status、interrupt、set_note、reply 或 ask 等结构化 action，schema 位于 [schemas/control-action.json](schemas/control-action.json)，解析和字段校验位于 [src/control.ts](src/control.ts)。
+ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_session、switch_session、list_sessions、status、interrupt、set_note、reply 或 ask 等结构化 action，schema 位于 [schemas/control-action.json](schemas/control-action.json)，解析和字段校验位于 [src/control.ts](src/control.ts)。对用户显示的名称统一为“会话管理 Agent”。
 
 ### 长报告分享
 
@@ -91,9 +91,9 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 已实现：
 
 - 微信二维码登录、iLink 长轮询、context token 保存、消息去重和文本分片。
-- `菜单`、`新建`、`切换`、`会话`、`状态`、`返回`、`停止`、`取消` 等高置信度中文短词和菜单序号由桥接层本地执行；/ctrl 作为自然语言控制入口；/new、/use、/sessions、/stat、/back、/stop、/cancel、/help 及中文斜杠别名保留为不依赖控制 Agent 的故障兜底命令。
+- `状态`、`停止`、`退出`、`帮助` 四个中文短词由桥接层本地执行；“帅哥、靓仔、小哥哥、哥哥、大哥、老哥”加需求作为会话管理 Agent 的唯一唤醒入口；不再保留任何斜杠命令、菜单、序号选择或 Raw 模式。
 - Codex thread 创建、恢复、列出、turn 启动和中断。
-- wecode 通过 Codex App Server 管理原生 thread，其他 Codex 客户端可独立连接同一服务；发生占用冲突时，只有用户明确确认后才会通过 App Server 请求中断活动 turn 并尝试恢复，不通过操作系统级别杀进程。
+- wecode 通过 Codex App Server 管理原生 thread，其他 Codex 客户端可独立连接同一服务；发生占用冲突时，只有用户明确确认后才会通过 App Server 请求中断活动 turn，并向精确持有目标 thread 锁的外部 Codex 进程发送退出信号，不删除锁文件或触碰其他进程。
 - turn 通知聚合：普通文本、plan、diff、report 等展示类型。
 - 状态原子写入、最多保留 500 条去重记录、空闲 App Server 订阅回收。
 - Markdown 转微信纯文本，按段落和代码块切分，并使用 Unicode 安全长度计算。
@@ -122,7 +122,7 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 
 ## 6. 优点与工程质量评价
 
-1. 模块职责清楚。iLink、桥接路由、控制 Agent、Codex RPC、会话、状态和渲染分别位于独立模块，后续替换外部适配器的成本较低。
+1. 模块职责清楚。iLink、桥接路由、会话管理 Agent、Codex RPC、会话、状态和渲染分别位于独立模块，后续替换外部适配器的成本较低。
 2. 类型约束较好。项目启用 strict、noUncheckedIndexedAccess，并对控制 action 使用 JSON Schema 与运行时字段校验。
 3. 本地状态写入考虑了崩溃一致性。状态先写临时文件再 rename，并对最终文件执行 0600 权限设置。
 4. 子进程调用普遍使用参数数组和 shell=false，没有发现把用户文本直接拼接进 shell 命令的路径。
@@ -138,15 +138,15 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 | 高 | Codex 默认完全放权 | ControlAgent 使用 dangerously-bypass-approvals-and-sandbox；thread/start、thread/resume、turn/start 均使用 never/full-access，见 [src/control.ts#L43](src/control.ts#L43)、[src/codex.ts#L186](src/codex.ts#L186)。一旦远程消息被接受，Codex 可修改本机文件、执行命令和访问其运行用户可见的数据。 | 默认改为沙箱和审批；如必须全权限，使用专用低权限 OS 用户、显式 opt-in，并限制工作目录。 |
 | 高 | 审批请求仍会被自动接受 | 即使未来把 Codex 改回需要审批，JsonRpcConnection 对 requestApproval 仍直接返回 decision=accept，见 [src/codex.ts#L133](src/codex.ts#L133)。这会让“启用审批”形同虚设。 | 删除自动 accept，改为明确拒绝或接入真正的人工/策略审批通道；安全配置变更后增加验证测试。 |
 | 高 | 访问控制 fail-open | 过滤条件是 allowedUser || scannedUser；两者都为空时不会拒绝任何发送者，见 [src/bridge.ts#L43](src/bridge.ts#L43)。二维码接口没有返回用户 ID 时尤其明显。 | 启动或处理消息前强制要求显式白名单；两项都为空时拒绝运行，并允许多个明确的 allowlist 用户。 |
-| 高 | 工作目录没有安全边界 | validCwd 只检查路径存在且为目录，未限制在 WECHATBOT_HOME 或配置的项目根目录下，见 [src/sessions.ts#L254](src/sessions.ts#L254)。控制 Agent 或用户可把会话指向任意本机目录。 | 对 realpath 后的目录做 allowlist，拒绝根目录、敏感目录和越界 symlink；必要时只允许预注册项目。 |
-| 高 | thread 所有权没有校验 | /use 和控制 action 可以按 thread_id 恢复任意 App Server thread，未验证 thread 是否属于当前用户或允许目录，见 [src/bridge.ts#L169](src/bridge.ts#L169)、[src/sessions.ts#L55](src/sessions.ts#L55)。多用户时可能导致会话串用和数据越权。 | 建立用户/thread/cwd 所有权映射；切换前校验归属和目录，禁止跨用户复用未经授权的 thread。 |
+| 高 | 工作目录没有安全边界 | validCwd 只检查路径存在且为目录，未限制在 WECHATBOT_HOME 或配置的项目根目录下，见 [src/sessions.ts#L254](src/sessions.ts#L254)。会话管理 Agent 或用户可把会话指向任意本机目录。 | 对 realpath 后的目录做 allowlist，拒绝根目录、敏感目录和越界 symlink；必要时只允许预注册项目。 |
+| 高 | thread 所有权没有校验 | 会话管理 Agent action 可以按 thread_id 恢复任意 App Server thread，未验证 thread 是否属于当前用户或允许目录，见 [src/bridge.ts#L169](src/bridge.ts#L169)、[src/sessions.ts#L55](src/sessions.ts#L55)。多用户时可能导致会话串用和数据越权。 | 建立用户/thread/cwd 所有权映射；切换前校验归属和目录，禁止跨用户复用未经授权的 thread。 |
 | 中 | 分享页是无认证 bearer URL | PagePublisher 的服务端只按随机 slug 找页面，没有认证；默认 TTL 为 24 小时，Quick Tunnel 通常是公网地址。报告还会按引用嵌入本地 Markdown 正文，见 [src/render.ts#L226](src/render.ts#L226)、[src/render.ts#L322](src/render.ts#L322)。 | 使用短 TTL、签名/一次性 URL 或访问认证；敏感文件默认不嵌入；增加 CSP 和内容脱敏。当前已验证的 XSS 过滤仍应保留。 |
 | 中 | WebSocket 断线后不会自动恢复 | JsonRpcConnection 的 close 处理只拒绝 pending request，没有通知 CodexAppServer 清理 connection；后续 connect 看到非空 connection 会直接复用已关闭连接，见 [src/codex.ts#L92](src/codex.ts#L92)、[src/codex.ts#L165](src/codex.ts#L165)。桥接服务重启前后的 thread 订阅也没有完整恢复流程。 | 在 close/error 时清空连接，按退避重连，重新 initialize，并对已绑定 thread 重新订阅；增加断线恢复测试。 |
 | 中 | stale thread 重建后可能丢失微信回执 | send 在首条 turn 失败时把 activeBinding 更新为新 thread，但随后创建 TurnAccumulator 时仍写入旧的 binding.threadId，见 [src/sessions.ts#L82](src/sessions.ts#L82)、[src/sessions.ts#L98](src/sessions.ts#L98)。完成回调按 thread 查绑定，可能找不到用户而直接返回，见 [src/bridge.ts#L218](src/bridge.ts#L218)。现有测试只验证绑定切换，没有验证最终回执。 | accumulator 使用 activeBinding.threadId；补充 turn/completed 到微信回复的回归测试。 |
 | 中 | 输入、队列和报告缺少全局上限 | 运行中消息直接 push 到用户内存队列，没有队列长度、单条消息、控制 prompt、页面内容或并发限制，见 [src/bridge.ts#L201](src/bridge.ts#L201)。大量消息可能造成内存压力或长时间占用 Codex。 | 设置消息/队列/报告大小上限，增加每用户速率限制和并发上限，超限时明确拒绝或丢弃。 |
 | 中 | cursor 可能早于消息处理落盘 | poll 成功后先异步更新 cursor，再逐条执行 bridge.handle；进程若在处理期间崩溃，重启后可能无法重放已取出的消息，见 [src/index.ts#L84](src/index.ts#L84)、[src/index.ts#L89](src/index.ts#L89)。 | 采用处理成功后再提交 cursor，或设计可重放/幂等的消息确认流程。 |
 | 中 | Quick Tunnel 失活后 URL 仍会复用 | Tunnel 返回 URL 后，后续只检查 publicBaseUrl，不监控 cloudflared 退出；隧道中途断开时仍会发送旧链接，见 [src/render.ts#L339](src/render.ts#L339)。多请求同时首次发布时也没有显式的 in-flight 锁。 | 监听 tunnel exit、清空失效 URL并重建；用共享初始化 promise 串行化首次建隧道。 |
-| 低 | 控制 Agent 临时文件异常时可能残留 | outputPath 在启动控制进程前创建；超时、spawn error 或非零退出会在进入清理 finally 前直接 reject，见 [src/control.ts#L35](src/control.ts#L35)、[src/control.ts#L52](src/control.ts#L52)、[src/control.ts#L87](src/control.ts#L87)。反复失败会积累 control-*.json。 | 将输出文件清理放入外层 finally，并在启动时清理过期临时文件。 |
+| 低 | 会话管理 Agent 临时文件异常时可能残留 | outputPath 在启动会话管理进程前创建；超时、spawn error 或非零退出会在进入清理 finally 前直接 reject，见 [src/control.ts#L35](src/control.ts#L35)、[src/control.ts#L52](src/control.ts#L52)、[src/control.ts#L87](src/control.ts#L87)。反复失败会积累 control-*.json。 | 将输出文件清理放入外层 finally，并在启动时清理过期临时文件。 |
 | 低 | 退出时没有显式等待状态落盘 | update/setBinding 等调用异步触发 save；SIGINT/SIGTERM 的 stop 只关闭 bridge/session/page，随后直接 process.exit，见 [src/index.ts#L51](src/index.ts#L51)、[src/state.ts#L56](src/state.ts#L56)。快速退出可能丢失 cursor、绑定时间或错误状态。 | 统一 shutdown 流程中显式 await store.save()，并处理写盘失败。 |
 | 中 | 状态文件损坏会降级为空状态 | state.json 读取或 JSON 解析失败后只记录日志并继续使用 emptyState，没有备份或 fail-closed；可能丢失登录凭据、cursor 和会话绑定，见 [src/state.ts#L33](src/state.ts#L33)、[src/state.ts#L46](src/state.ts#L46)。同时没有验证 version 和 binding 字段类型。 | 先备份损坏文件并停止运行或显式要求恢复；增加 BotState schema 校验、版本迁移和损坏状态恢复流程。 |
 | 低 | 控制 action 的运行时校验不完整 | JSON Schema 声明了 additionalProperties=false 和完整字段类型，但 parseAction 只校验 action 及少数必需字段，未校验可选字段类型或额外字段，见 [schemas/control-action.json#L3](schemas/control-action.json#L3)、[src/control.ts#L165](src/control.ts#L165)。 | 使用同一份 schema 做运行时验证，拒绝未知字段和错误类型，避免模型输出绕过边界。 |
@@ -170,7 +170,7 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 3. 监控 cloudflared 生命周期，失效时重建隧道；避免并发首次初始化。
 4. 统一退出流程并等待 state save。
 5. 明确 App Server 的进程所有权，避免由 wecode 启动的后台进程长期遗留。
-6. 调整 cursor 提交时机，确保消息处理成功后再推进游标；清理控制 Agent 的临时文件。
+6. 调整 cursor 提交时机，确保消息处理成功后再推进游标；清理会话管理 Agent 的临时文件。
 
 ### 第三阶段：补齐工程化
 

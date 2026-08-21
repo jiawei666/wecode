@@ -1,7 +1,13 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile as execFileCallback, spawn, type ChildProcess } from 'node:child_process';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import type { AppConfig } from './config.js';
 import type { SessionLaunchOptions, ThreadSnapshot, ThreadSummary } from './model.js';
+import type { ExternalWriterRelease } from './session-adapter.js';
+
+const execFile = promisify(execFileCallback);
 
 interface RpcMessage {
   id?: number;
@@ -241,6 +247,59 @@ export class CodexAppServer {
     return { ...result.thread, cli: 'codex' };
   }
 
+  async releaseExternalWriter(threadId: string): Promise<ExternalWriterRelease> {
+    if (process.platform === 'win32') {
+      return {
+        attempted: false,
+        released: false,
+        pids: [],
+        detail: '当前平台无法安全识别持有 thread 锁的外部进程',
+      };
+    }
+
+    const codexHome = process.env.CODEX_HOME?.trim() || path.join(homedir(), '.codex');
+    const lockPath = path.resolve(codexHome, 'thread-writer-locks', `${threadId}.lock`);
+    const owners = await externalWriterPids(lockPath, this.process?.pid);
+    if (!owners.length) {
+      return {
+        attempted: false,
+        released: false,
+        pids: [],
+        detail: '未找到可安全释放的外部 Codex 锁持有进程',
+      };
+    }
+
+    const signaled: number[] = [];
+    for (const pid of owners) {
+      try {
+        process.kill(pid, 'SIGINT');
+        signaled.push(pid);
+      } catch {
+        // The process may have exited between lsof and kill; polling below
+        // decides whether the exact lock was actually released.
+      }
+    }
+
+    if (await waitForLockRelease(lockPath, signaled, 2_000, this.process?.pid)) {
+      return { attempted: true, released: true, pids: signaled };
+    }
+
+    for (const pid of signaled) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // The process may have exited while the graceful signal was pending.
+      }
+    }
+    const released = await waitForLockRelease(lockPath, signaled, 3_000, this.process?.pid);
+    return {
+      attempted: true,
+      released,
+      pids: signaled,
+      ...(released ? {} : { detail: '外部 Codex 客户端未在安全退出窗口内释放锁' }),
+    };
+  }
+
   async readThread(threadId: string): Promise<ThreadSnapshot> {
     await this.connect();
     const result = await this.request<AppServerThreadReadResponse>('thread/read', {
@@ -358,4 +417,46 @@ export class CodexAppServer {
     }
     throw new Error(`codex app-server endpoint was not ready: ${this.config.codexEndpoint}`);
   }
+}
+
+async function externalWriterPids(lockPath: string, managedPid?: number): Promise<number[]> {
+  let output = '';
+  try {
+    const result = await execFile('lsof', ['-t', lockPath], { timeout: 3_000, maxBuffer: 32_000 });
+    output = result.stdout;
+  } catch {
+    return [];
+  }
+
+  const pids: number[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const pid = Number(line.trim());
+    if (!Number.isInteger(pid) || pid <= 0 || pid === managedPid) continue;
+    const command = await processCommand(pid);
+    const normalized = command.toLowerCase();
+    if (!normalized.includes('codex') || normalized.includes('app-server')) continue;
+    pids.push(pid);
+  }
+  return [...new Set(pids)];
+}
+
+async function processCommand(pid: number): Promise<string> {
+  try {
+    const result = await execFile('ps', ['-o', 'command=', '-p', String(pid)], { timeout: 2_000, maxBuffer: 32_000 });
+    return result.stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+async function waitForLockRelease(lockPath: string, pids: number[], timeoutMs: number, managedPid?: number): Promise<boolean> {
+  if (!pids.length) return false;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = await externalWriterPids(lockPath, managedPid);
+    if (!remaining.some((pid) => pids.includes(pid))) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const remaining = await externalWriterPids(lockPath, managedPid);
+  return !remaining.some((pid) => pids.includes(pid));
 }

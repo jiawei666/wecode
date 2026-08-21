@@ -33,25 +33,6 @@ export interface PendingTakeover {
   running: boolean;
 }
 
-export interface SessionSelectionItem extends SessionLaunchOptions {
-  cli: CliKind;
-  threadId: string;
-  cwd: string;
-  name?: string;
-  preview?: string;
-}
-
-export interface SessionSelection {
-  createdAt: number;
-  expiresAt: number;
-  items: SessionSelectionItem[];
-}
-
-export interface MenuState {
-  createdAt: number;
-  expiresAt: number;
-}
-
 export interface BotState {
   version: 1;
   token: string;
@@ -65,8 +46,6 @@ export interface BotState {
   controls: Record<string, ControlState>;
   bindingHistory: Record<string, SessionBinding[]>;
   sessionNotes: Record<string, string>;
-  selections: Record<string, SessionSelection>;
-  menuStates: Record<string, MenuState>;
   dedup: string[];
   lastPollAt: number;
   lastError: string;

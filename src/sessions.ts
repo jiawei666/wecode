@@ -26,6 +26,10 @@ interface TurnAccumulator {
   startedAt: number;
 }
 
+const TAKEOVER_IDLE_POLL_ATTEMPTS = 20;
+const TAKEOVER_RETRY_ATTEMPTS = 12;
+const TAKEOVER_RETRY_DELAY_MS = 250;
+
 export interface SessionStatus {
   binding?: SessionBinding;
   running: boolean;
@@ -437,18 +441,49 @@ export class SessionManager {
       await this.waitForIdle(threadId, cwd);
     }
 
-    try {
-      return await this.appServer.resumeThread(threadId);
-    } catch (error) {
-      if (isSessionConflict(error)) {
-        throw new SessionOccupiedError(threadId, cwd, false, '已请求中断当前任务，但外部客户端仍占用该会话', true);
+    return this.resumeAfterTakeover(threadId, cwd, Boolean(activeTurn));
+  }
+
+  private async resumeAfterTakeover(threadId: string, cwd: string, interruptedTurn: boolean): Promise<ThreadSummary> {
+    const firstResume = await this.retryResume(threadId);
+    if (firstResume) return firstResume;
+
+    let releaseDetail = '';
+    if (this.appServer.releaseExternalWriter) {
+      try {
+        const release = await this.appServer.releaseExternalWriter(threadId);
+        releaseDetail = release.detail || '';
+        if (release.released) {
+          const resumed = await this.retryResume(threadId);
+          if (resumed) return resumed;
+        }
+      } catch (error) {
+        releaseDetail = `释放外部客户端失败：${errorText(error)}`;
       }
-      throw error;
     }
+
+    const latest = await this.readOccupiedThread(threadId);
+    const running = interruptedTurn && threadIsRunning(latest);
+    const detail = releaseDetail || (running
+      ? '已请求中断活动任务，但外部客户端仍占用该会话'
+      : '目标任务已空闲，但外部客户端仍保持会话占用');
+    throw new SessionOccupiedError(threadId, cwd, running, detail, true);
+  }
+
+  private async retryResume(threadId: string): Promise<ThreadSummary | undefined> {
+    for (let attempt = 0; attempt < TAKEOVER_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.appServer.resumeThread(threadId);
+      } catch (error) {
+        if (!isSessionConflict(error)) throw error;
+        if (attempt + 1 < TAKEOVER_RETRY_ATTEMPTS) await delay(TAKEOVER_RETRY_DELAY_MS);
+      }
+    }
+    return undefined;
   }
 
   private async waitForIdle(threadId: string, cwd: string): Promise<void> {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < TAKEOVER_IDLE_POLL_ATTEMPTS; attempt += 1) {
       let snapshot: ThreadSnapshot;
       try {
         snapshot = await this.appServer.readThread(threadId);

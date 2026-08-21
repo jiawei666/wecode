@@ -162,6 +162,9 @@ test('safely interrupts an active external turn before resuming its session', as
     onNotification: () => () => undefined,
     resumeThread: async () => {
       resumeCalls += 1;
+      if (resumeCalls === 1) {
+        throw new Error('thread-store conflict: active writer');
+      }
       return { id: 'occupied-thread', cwd: directory, status: { type: 'idle' } };
     },
     readThread: async () => {
@@ -181,9 +184,43 @@ test('safely interrupts an active external turn before resuming its session', as
     const result = await manager.use('user', 'occupied-thread', directory, {}, true);
     assert.equal(result.binding.threadId, 'occupied-thread');
     assert.deepEqual(interrupted, { threadId: 'occupied-thread', turnId: 'turn-1' });
-    assert.equal(resumeCalls, 1);
+    assert.equal(resumeCalls, 2);
     assert.equal(readCalls, 2);
     assert.equal(store.getBinding('user')?.threadId, 'occupied-thread');
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('releases an idle external writer after confirmed takeover', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-idle-takeover-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  let resumeCalls = 0;
+  let releaseCalls = 0;
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    resumeThread: async () => {
+      resumeCalls += 1;
+      if (releaseCalls === 0) throw new Error('thread-store conflict: active writer');
+      return { id: 'idle-occupied-thread', cwd: directory, status: { type: 'idle' } };
+    },
+    readThread: async () => ({ id: 'idle-occupied-thread', cwd: directory, status: { type: 'idle' }, turns: [] }),
+    releaseExternalWriter: async () => {
+      releaseCalls += 1;
+      return { released: true, pids: [1234] };
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    const result = await manager.use('user', 'idle-occupied-thread', directory, {}, true);
+    assert.equal(result.binding.threadId, 'idle-occupied-thread');
+    assert.equal(releaseCalls, 1);
+    assert.ok(resumeCalls > 1);
   } finally {
     await manager.close();
     await store.save();

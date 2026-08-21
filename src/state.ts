@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { BotState, ControlState, MenuState, SessionBinding, SessionSelection } from './model.js';
+import type { BotState, ControlState, SessionBinding } from './model.js';
 
 const KEEP_DEDUP = 500;
 
@@ -18,8 +18,6 @@ function emptyState(): BotState {
     controls: {},
     bindingHistory: {},
     sessionNotes: {},
-    selections: {},
-    menuStates: {},
     dedup: [],
     lastPollAt: 0,
     lastError: '',
@@ -39,7 +37,9 @@ export class StateStore {
     await mkdir(path.dirname(this.file), { recursive: true });
     try {
       const raw = await readFile(this.file, 'utf8');
-      const loaded = JSON.parse(raw) as Partial<BotState>;
+      const loaded = JSON.parse(raw) as StoredState;
+      delete loaded.selections;
+      delete loaded.menuStates;
       this.state = {
         ...emptyState(),
         ...loaded,
@@ -58,8 +58,6 @@ export class StateStore {
           Object.entries(loaded.bindingHistory ?? {}).map(([userId, history]) => [userId, history.map(normalizeBinding)]),
         ),
         sessionNotes: loaded.sessionNotes ?? {},
-        selections: loaded.selections ?? {},
-        menuStates: loaded.menuStates ?? {},
         dedup: loaded.dedup ?? [],
       };
     } catch (error) {
@@ -140,34 +138,6 @@ export class StateStore {
     void this.save();
   }
 
-  setSelection(userId: string, selection: SessionSelection): void {
-    this.state.selections[userId] = selection;
-    void this.save();
-  }
-
-  getSelection(userId: string): SessionSelection | undefined {
-    return this.state.selections[userId];
-  }
-
-  clearSelection(userId: string): void {
-    delete this.state.selections[userId];
-    void this.save();
-  }
-
-  setMenu(userId: string, menu: MenuState): void {
-    this.state.menuStates[userId] = menu;
-    void this.save();
-  }
-
-  getMenu(userId: string): MenuState | undefined {
-    return this.state.menuStates[userId];
-  }
-
-  clearMenu(userId: string): void {
-    delete this.state.menuStates[userId];
-    void this.save();
-  }
-
   setSessionNote(threadId: string, note: string): void {
     if (note.trim()) this.state.sessionNotes[threadId] = note.trim();
     else delete this.state.sessionNotes[threadId];
@@ -198,6 +168,11 @@ export class StateStore {
     }
   }
 }
+
+type StoredState = Partial<BotState> & {
+  selections?: unknown;
+  menuStates?: unknown;
+};
 
 function normalizeBinding(binding: SessionBinding): SessionBinding {
   return {

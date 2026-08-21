@@ -42,7 +42,7 @@ test('persists the one-time onboarding claim', async () => {
   }
 });
 
-test('persists binding history, notes, and local fallback selections', async () => {
+test('persists binding history and notes', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-extra-'));
   const file = path.join(directory, 'state.json');
   try {
@@ -57,20 +57,12 @@ test('persists binding history, notes, and local fallback selections', async () 
     store.setBinding('user', binding);
     store.pushBindingHistory('user', { ...binding, threadId: 'thread-b' }, 5);
     store.setSessionNote('thread-a', '登录问题排查');
-    store.setSelection('user', {
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 60_000,
-      items: [{ cli: 'codex', threadId: 'thread-a', cwd: directory }],
-    });
-    store.setMenu('user', { createdAt: Date.now(), expiresAt: Date.now() + 60_000 });
     await store.save();
 
     const restored = new StateStore(file);
     await restored.init();
     assert.equal(restored.getBindingHistory('user')[0]?.threadId, 'thread-b');
     assert.equal(restored.getSessionNote('thread-a'), '登录问题排查');
-    assert.equal(restored.getSelection('user')?.items[0]?.threadId, 'thread-a');
-    assert.ok(restored.getMenu('user'));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

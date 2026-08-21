@@ -1,6 +1,13 @@
 import type { CliKind, SessionLaunchOptions, ThreadSnapshot, ThreadSummary } from './model.js';
 import type { CodexNotification } from './codex.js';
 
+export interface ExternalWriterRelease {
+  attempted: boolean;
+  released: boolean;
+  pids: number[];
+  detail?: string;
+}
+
 /**
  * The bridge owns routing and bindings; each CLI owns its native thread store.
  * A future Claude Code implementation only needs to satisfy this adapter.
@@ -10,6 +17,8 @@ export interface SessionAdapter {
   onNotification(listener: (notification: CodexNotification) => void): () => void;
   startThread(cwd: string, options?: SessionLaunchOptions): Promise<ThreadSummary>;
   resumeThread(threadId: string): Promise<ThreadSummary>;
+  /** Release only the external process that owns this exact thread lock. */
+  releaseExternalWriter?(threadId: string): Promise<ExternalWriterRelease>;
   readThread(threadId: string): Promise<ThreadSnapshot>;
   listThreads(cwd?: string): Promise<ThreadSummary[]>;
   startTurn(threadId: string, cwd: string, text: string, options?: SessionLaunchOptions): Promise<string>;
