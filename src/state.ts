@@ -13,7 +13,6 @@ function emptyState(): BotState {
     scannedUser: '',
     cursor: '',
     contextTokens: {},
-    onboardingShown: {},
     bindings: {},
     controls: {},
     bindingHistory: {},
@@ -40,11 +39,11 @@ export class StateStore {
       const loaded = JSON.parse(raw) as StoredState;
       delete loaded.selections;
       delete loaded.menuStates;
+      delete loaded.onboardingShown;
       this.state = {
         ...emptyState(),
         ...loaded,
         contextTokens: loaded.contextTokens ?? {},
-        onboardingShown: loaded.onboardingShown ?? {},
         bindings: Object.fromEntries(
           Object.entries(loaded.bindings ?? {}).map(([userId, binding]) => [userId, normalizeBinding(binding)]),
         ),
@@ -68,16 +67,6 @@ export class StateStore {
 
   get(): BotState {
     return this.state;
-  }
-
-  hasOnboardingShown(userId: string): boolean {
-    return this.state.onboardingShown[userId] === true;
-  }
-
-  markOnboardingShown(userId: string): void {
-    if (this.hasOnboardingShown(userId)) return;
-    this.state.onboardingShown[userId] = true;
-    void this.save();
   }
 
   update(mutator: (state: BotState) => void): void {
@@ -172,6 +161,7 @@ export class StateStore {
 type StoredState = Partial<BotState> & {
   selections?: unknown;
   menuStates?: unknown;
+  onboardingShown?: unknown;
 };
 
 function normalizeBinding(binding: SessionBinding): SessionBinding {

@@ -23,33 +23,24 @@ function message(text: string, id: string): InboundMessage {
   };
 }
 
-test('shows the first-run guide once without swallowing the initial command', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-onboarding-'));
+test('does not send an automatic first-run guide before explicit help', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-guide-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
-  const sent: string[] = [];
   const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
+  const sent: string[] = [];
   const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
   const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
 
   try {
-    await bridge.handle(message('帮助', 'onboarding-1'));
-    assert.match(sent[0] || '', /欢迎使用 wecode/);
-    assert.match(sent[0] || '', /wecode 使用指南/);
-    assert.match(sent[0] || '', /帅哥/);
-    assert.match(sent[0] || '', /靓仔/);
-    assert.match(sent[0] || '', /小哥哥/);
-    assert.match(sent[0] || '', /哥哥/);
-    assert.match(sent[0] || '', /大哥/);
-    assert.match(sent[0] || '', /老哥/);
-    assert.match(sent[0] || '', /会话管理 Agent/);
-    assert.match(sent.at(-1) || '', /主要入口/);
-    assert.match(sent.at(-1) || '', /最新的 5 个会话/);
-    assert.equal(store.get().onboardingShown.user, true);
+    await bridge.handle(message('帮助', 'help-1'));
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(sent[0] || '', /欢迎使用 wecode|wecode 使用指南/);
+    assert.match(sent[0] || '', /主要入口/);
 
-    await bridge.handle(message('帮助', 'onboarding-2'));
-    assert.equal(sent.filter((text) => text.includes('欢迎使用 wecode')).length, 1);
+    await bridge.handle(message('帮助', 'help-2'));
+    assert.equal(sent.length, 2);
   } finally {
     await bridge.close();
     await store.save();
@@ -57,27 +48,83 @@ test('shows the first-run guide once without swallowing the initial command', as
   }
 });
 
-test('retries the first-run guide when its delivery fails', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-onboarding-retry-'));
+test('automatically enters session management when a plain message has no session', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-no-session-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
-  let attempts = 0;
-  const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
-  const fakeIlink = {
-    sendText: async (_to: string, _text: string) => {
-      attempts += 1;
-      return { ok: attempts > 1 };
+  const sent: string[] = [];
+  let controlPrompt = '';
+  const fakeControl = {
+    run: async (_userId: string, prompt: string) => {
+      controlPrompt = prompt;
+      return { action: { action: 'reply' as const, text: '会话管理 Agent 已响应。' }, sessionId: 'control-thread' };
     },
-  } as never;
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = { list: async () => [], close: async () => undefined } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
   const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
-  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('帮助', 'onboarding-retry-1'));
-    assert.equal(store.hasOnboardingShown('user'), false);
+    await bridge.handle(message('帮我处理一个普通请求', 'no-session-1'));
+    assert.ok(sent.some((text) => /当前没有会话，已自动进入会话管理模式/.test(text)));
+    assert.match(sent.at(-1) || '', /会话管理 Agent 已响应/);
+    assert.doesNotMatch(sent.join('\n'), /唤醒词|帅哥/);
+    assert.match(controlPrompt, /帮我处理一个普通请求/);
+    assert.equal(store.getControl('user')?.sessionId, 'control-thread');
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-    await bridge.handle(message('帮助', 'onboarding-retry-2'));
-    assert.equal(store.hasOnboardingShown('user'), true);
+test('automatically enters session management when the current session is stale', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-stale-session-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  store.setBinding('user', {
+    threadId: 'stale-thread',
+    cwd: directory,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  });
+  const sent: string[] = [];
+  let controlPrompt = '';
+  let released = false;
+  const fakeControl = {
+    run: async (_userId: string, prompt: string) => {
+      controlPrompt = prompt;
+      return { action: { action: 'reply' as const, text: '已准备恢复会话。' }, sessionId: 'control-thread' };
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    status: async () => ({ binding: store.getBinding('user'), running: false }),
+    send: async () => { throw new Error('thread not found'); },
+    release: async () => { released = true; return true; },
+    list: async () => [],
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('继续处理刚才的任务', 'stale-session-1'));
+    assert.ok(sent.some((text) => /当前会话已失效，已自动进入会话管理模式/.test(text)));
+    assert.doesNotMatch(sent.join('\n'), /唤醒词|帅哥/);
+    assert.match(controlPrompt, /继续处理刚才的任务/);
+    assert.equal(store.getBinding('user'), undefined);
+    assert.equal(store.getControl('user')?.sessionId, 'control-thread');
+    assert.equal(released, true);
   } finally {
     await bridge.close();
     await store.save();
@@ -136,14 +183,17 @@ test('keeps four local commands while honorifics enter the session-management Ag
     assert.deepEqual(localCalls, ['stop', 'release']);
     assert.equal(store.getBinding('user'), undefined);
 
+    const beforeAutoManagement = sent.length;
     await bridge.handle(message('帮我新建一个会话', 'ordinary-without-session'));
-    assert.match(sent.at(-1) || '', /试试说“帅哥/);
-    assert.equal(controlRuns, 0);
+    const autoManagementReplies = sent.slice(beforeAutoManagement).join('\n');
+    assert.match(autoManagementReplies, /已自动进入会话管理模式/);
+    assert.doesNotMatch(autoManagementReplies, /唤醒词/);
+    assert.equal(controlRuns, 1);
 
     await bridge.handle(message('帅哥，帮我列出会话', 'wake-control'));
     assert.match(sent.at(-1) || '', /会话管理 Agent/);
     assert.equal(store.getControl('user')?.sessionId, 'control-thread');
-    assert.equal(controlRuns, 1);
+    assert.equal(controlRuns, 2);
   } finally {
     await bridge.close();
     await store.save();
@@ -339,6 +389,8 @@ test('lets the session-management Agent format lists and resolve a natural-langu
 
     await bridge.handle(message('第 2 个', 'control-2'));
     assert.match(sent.at(-1) || '', /已切换会话/);
+    assert.match(sent.at(-1) || '', /后续普通消息/);
+    assert.doesNotMatch(sent.at(-1) || '', /唤醒词/);
     assert.equal(store.getBinding('user')?.threadId, 'target-thread');
     assert.equal(store.getControl('user'), undefined);
   } finally {

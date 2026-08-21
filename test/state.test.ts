@@ -23,25 +23,6 @@ test('persists rapid consecutive state updates', async () => {
   }
 });
 
-test('persists the one-time onboarding claim', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-onboarding-'));
-  const file = path.join(directory, 'state.json');
-  try {
-    const store = new StateStore(file);
-    await store.init();
-    assert.equal(store.hasOnboardingShown('user'), false);
-    store.markOnboardingShown('user');
-    assert.equal(store.hasOnboardingShown('user'), true);
-    await store.save();
-
-    const restored = new StateStore(file);
-    await restored.init();
-    assert.equal(restored.hasOnboardingShown('user'), true);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
 test('persists binding history and notes', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-extra-'));
   const file = path.join(directory, 'state.json');

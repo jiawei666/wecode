@@ -2,7 +2,6 @@
 
 import 'dotenv/config';
 import { mkdir } from 'node:fs/promises';
-import { STARTUP_HINT } from './commands.js';
 import { ensureConfigFile, loadConfig } from './config.js';
 import { BridgeApp } from './bridge.js';
 import { CodexAppServer } from './codex.js';
@@ -112,7 +111,7 @@ async function runBridge(config: ReturnType<typeof loadConfig>, store: StateStor
 
     const reapTimer = setInterval(() => void sessions.reapIdle(), 60_000);
     reapTimer.unref();
-    process.stdout.write(`wecode 已启动，监听 ${store.get().scannedUser || '绑定微信用户'}\n${STARTUP_HINT}\n`);
+    process.stdout.write(`wecode 已启动，监听 ${store.get().scannedUser || '绑定微信用户'}\n`);
 
     let backoff = 1000;
     while (!stopping) {
