@@ -202,8 +202,26 @@ export class CodexAppServer {
   async close(): Promise<void> {
     this.connection?.close();
     this.connection = null;
-    if (this.process && !this.process.killed) this.process.kill('SIGTERM');
+    const managedProcess = this.process;
     this.process = null;
+    if (!managedProcess || managedProcess.killed || managedProcess.exitCode !== null) return;
+
+    if (process.platform === 'win32' && managedProcess.pid) {
+      // spawnCodex uses cmd.exe on Windows. Terminating only that wrapper can
+      // leave codex.exe alive with the thread writer lock. This PID is always
+      // the child started by wecode, never a PID discovered from a lock file,
+      // so terminating its process tree cannot touch an external Desktop.
+      try {
+        await execFile('taskkill.exe', ['/PID', String(managedProcess.pid), '/T', '/F'], {
+          timeout: 5_000,
+          windowsHide: true,
+        });
+      } catch {
+        if (!managedProcess.killed && managedProcess.exitCode === null) managedProcess.kill('SIGTERM');
+      }
+    } else {
+      managedProcess.kill('SIGTERM');
+    }
     // The App Server owns persisted threads; only our child process is stopped.
   }
 

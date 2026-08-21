@@ -22,9 +22,10 @@
  │ iLink
  ▼
 wecode（本机桥接层，登录后自动后台运行）
- ├─ 普通消息 ───────────────► Codex App Server ─► Codex 原生 threads
- ├─ “帅哥，帮我……” ───────► 会话管理 Agent
- ├─ status / login / stop / logs ─► 后台进程管理
+ ├─ 普通消息（有会话） ─────► Codex App Server ─► Codex 原生 threads
+ ├─ 普通消息（无会话） ─────► 自动进入会话管理 Agent
+ ├─ “帅哥，帮我……” ───────► 已有会话时进入会话管理 Agent
+ ├─ status / login / restart / stop / logs ─► 后台进程管理
  ├─ 状态 / 停止 / 退出 / 帮助 ─► 本地确定性操作
  └─ 长回答
       ├─ 本地临时 Markdown 页面
@@ -60,33 +61,51 @@ Windows 如果终端中 `codex` 可以运行但 wecode 仍提示找不到 Codex�
 }
 ```
 
-Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 Restart Manager 查询目标 thread 对应的精确锁文件。为避免 GPT/Codex Desktop 崩溃，Windows 不会自动强制结束持锁客户端；确认接管仍被占用时会自动通过 `thread/fork` 复制已保存历史并绑定新会话。如果必须继续使用原 thread，请先完全退出客户端（包括托盘进程）后重试。wecode 不会删除锁文件，也不会关闭其他无关进程。
+Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 Restart Manager 查询目标 thread 对应的精确锁文件。退出最后一个 wecode 绑定时会回收 wecode 自己的 App Server 连接/子进程；为避免 GPT/Codex Desktop 崩溃，Windows 不会自动强制结束外部持锁客户端。确认接管仍被占用时会自动通过 `thread/fork` 复制已保存历史并绑定新会话。如果必须继续使用原 thread，请先完全退出客户端（包括托盘进程）后重试。wecode 不会删除锁文件，也不会关闭其他无关进程。
 
-第一次运行会在终端显示二维码。微信扫码确认后，wecode 会自动保存状态、转入后台并返回终端；以后仍然只需要执行：
+首次启动执行 `wecode`，扫码登录。完整命令见下表。
 
-```bash
-wecode
-```
+## 命令
 
-首次扫码时终端会暂时等待二维码；后台运行后，常用命令是：
+### 终端命令
 
-```bash
-wecode status
-wecode logs
-wecode stop
-```
+| 命令 | 作用 |
+| --- | --- |
+| `wecode` | 首次扫码登录；已有登录状态时直接启动后台进程 |
+| `wecode login` | 停止旧进程，重新扫码登录并启动后台进程 |
+| `wecode restart` | 重启后台进程，复用已有登录状态；未登录时才扫码 |
+| `wecode status` | 查看后台进程、登录状态和最近错误 |
+| `wecode logs` | 查看后台日志 |
+| `wecode stop` | 停止后台进程 |
+| `wecode --help` | 查看命令帮助 |
 
-后台进程由 wecode 自己管理，不需要安装或配置 systemd、launchd 等系统服务。
+### 微信消息命令
 
-需要重新扫码时，wecode 会先停止旧进程，登录成功后自动重新后台运行：
-
-```bash
-wecode login
-```
+| 消息 | 作用 |
+| --- | --- |
+| `状态` | 查看当前会话、任务和队列 |
+| `停止` | 中断当前任务并清空队列 |
+| `分叉` / `复制会话` | 从当前会话复制已保存历史并新建对话 |
+| `退出` | 退出当前会话管理流程；没有管理流程时解除当前 wecode 会话绑定，外部 Desktop 锁需在 Desktop 中释放 |
+| `帮助` | 查看会话管理帮助 |
+| `帅哥，帮我……` | 已有会话时进入会话管理模式 |
 
 ## 使用
 
-在绑定的微信中发送普通消息即可继续当前 Codex 会话。还没有当前会话时，可以直接说：
+扫码登录后，wecode 有两种工作模式。
+
+首次收到消息时会发送一次欢迎语，之后不再重复。
+
+### 普通会话模式
+
+有当前会话时，直接发送普通消息，消息会交给当前 Codex 会话。
+
+### 会话管理模式
+
+用于查找、新建、切换、恢复和退出会话：
+
+- 没有当前会话：发送普通消息会进入会话管理模式，并继续处理这条消息。
+- 已有当前会话：使用唤醒词进入管理模式，例如：
 
 ```text
 帅哥，帮我在 wecode 项目新建一个会话
@@ -102,16 +121,7 @@ wecode login
 ```
 
 发送“分叉”或“复制会话”会通过 Codex App Server 复制当前会话的已保存历史，创建并绑定一个新会话；原会话不会被关闭。Windows Codex Desktop 占用会话时，确认接管失败也会自动使用这个方式，不会强制结束 Desktop。正在生成中的未完成回复不会复制。
-
-本地命令：
-
-| 消息 | 作用 |
-| --- | --- |
-| `状态` | 查看当前目录、任务和队列 |
-| `停止` | 中断当前任务并清空队列 |
-| `分叉` / `复制会话` | 从当前会话复制已保存历史并新建对话 |
-| `退出` | 退出当前会话管理流程 |
-| `帮助` | 查看简短帮助 |
+新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出`、`帮助` 可以直接使用。
 
 ## 长文案与 Cloudflare 临时链接
 
@@ -142,13 +152,13 @@ Windows 或其他架构：从 [Cloudflare 官方下载页](https://developers.cl
 
 ### 2. 直接使用
 
-不需要 Cloudflare 账号、域名、Token，也不要执行 `cloudflared tunnel login`。安装完成后重启 `wecode`，然后发送：
+不需要 Cloudflare 账号、域名、Token，也不要执行 `cloudflared tunnel login`。安装完成后先确认 `cloudflared --version` 可用；如果运行中的 wecode 找不到它，执行 `wecode restart`，然后发送：
 
 ```text
 写一份完整的项目分析报告，并生成分享页
 ```
 
-wecode 会在需要时自动启动 Quick Tunnel，生成随机的 `trycloudflare.com` 地址，并返回带随机路径的分享链接。用户不需要填写 `SHARE_PAGE_BASE_URL`。
+wecode 会在需要时自动启动 Quick Tunnel，生成随机的 `trycloudflare.com` 地址，并返回带随机路径的分享链接。分享页支持分析、计划、变更摘要和普通长文，不限定为分析报告；标题会根据内容动态生成，页头显示项目名，页脚显示 `Powered by wecode`。用户不需要填写 `SHARE_PAGE_BASE_URL`。
 
 Quick Tunnel 适合临时阅读和开发测试，不是正式网站服务。链接相当于访问凭证，拿到链接的人都可以访问页面；不要分享敏感内容。Cloudflare 的 Quick Tunnel 还有并发和协议限制，详见[官方说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)。
 

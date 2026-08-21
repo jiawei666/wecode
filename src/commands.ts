@@ -44,6 +44,8 @@ function parseControlInvocation(input: string): BridgeCommand | null {
   return { kind: 'control', text: (match[2] ?? '').trim() };
 }
 
+export const SESSION_ACTIVE_HINT = '后续普通消息将发送到当前 Codex 会话。';
+
 export const SESSION_ROUTING_HINT = '普通消息→当前 Codex；输入唤醒词唤醒会话管理 Agent，输入“帮助”查看帮助。';
 
 export const NO_SESSION_HINT = `当前没有会话。\n唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}\n试试说“帅哥，帮我在项目名新建一个会话”。`;
@@ -62,6 +64,8 @@ export const FIRST_RUN_GUIDE = `👋 欢迎使用 wecode！
 状态｜停止｜分叉｜退出｜帮助`;
 
 export const STARTUP_HINT = `唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}；例如“帅哥，帮我查找项目最新的 5 个会话”。状态、停止、分叉、退出、帮助可直接使用。`;
+
+export const WELCOME_TEXT = '👋 欢迎使用 wecode！\n\n💬 直接发送任务即可。';
 
 export const HELP_TEXT = `主要入口：
 唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}

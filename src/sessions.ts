@@ -220,8 +220,20 @@ export class SessionManager {
     if (!binding) return { released: false };
     await this.stop(userId);
     await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
-    if (process.platform !== 'win32' || !this.appServer.releaseExternalWriter) return { released: true };
-    const externalWriter = await this.appServer.releaseExternalWriter(binding.threadId).catch(() => undefined);
+    const externalWriter = process.platform === 'win32' && this.appServer.releaseExternalWriter
+      ? await this.appServer.releaseExternalWriter(binding.threadId).catch(() => undefined)
+      : undefined;
+
+    // `thread/unsubscribe` releases this connection's subscription, but the
+    // long-lived App Server can still retain its thread-store ownership. Once
+    // the last local binding is gone, recycle our own connection/process so a
+    // later `use` starts from a clean ownership state. If another binding is
+    // active, keep the shared App Server alive for it.
+    if (this.canRecycleAppServer(userId, binding.threadId)) {
+      await this.appServer.close().catch((error) => {
+        process.stderr.write(`[session] failed to recycle App Server after release: ${errorText(error)}\n`);
+      });
+    }
     return { released: true, ...(externalWriter ? { externalWriter } : {}) };
   }
 
@@ -372,6 +384,12 @@ export class SessionManager {
       this.store.pushBindingHistory(userId, previous, this.config.bindingHistoryLimit);
     }
     this.store.setBinding(userId, binding);
+  }
+
+  private canRecycleAppServer(userId: string, threadId: string): boolean {
+    const hasOtherBinding = Object.keys(this.store.get().bindings).some((otherUserId) => otherUserId !== userId);
+    if (hasOtherBinding) return false;
+    return ![...this.activeTurns.values()].some((turn) => turn.threadId !== threadId);
   }
 
   private async validCwd(candidate: string): Promise<string> {
@@ -566,10 +584,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function inferTurnPresentation(text: string): { kind: 'report'; presentation: 'page' } | undefined {
+export function inferTurnPresentation(text: string): { kind: 'report' | 'plain'; presentation: 'page' } | undefined {
   const normalized = text.toLowerCase();
-  const explicitReport = /总结报告|分析报告|审查报告|生成报告|长报告|分享页|sharepage|\breport\b|\bsummary\b/i.test(normalized);
+  const explicitReport = /总结报告|分析报告|审查报告|生成报告|长报告|\breport\b|\bsummary\b/i.test(normalized);
+  const explicitShare = /分享页|sharepage/i.test(normalized);
   const repositorySummary = /(总结|分析|审查|评估|梳理).{0,24}(仓库|项目|代码|repo|repository|codebase|架构)/i.test(normalized);
   if (explicitReport || repositorySummary) return { kind: 'report', presentation: 'page' };
+  if (explicitShare) return { kind: 'plain', presentation: 'page' };
   return undefined;
 }

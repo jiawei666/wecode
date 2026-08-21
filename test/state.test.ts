@@ -23,20 +23,18 @@ test('persists rapid consecutive state updates', async () => {
   }
 });
 
-test('persists the one-time onboarding claim', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-onboarding-'));
+test('persists the pending welcome state', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-welcome-'));
   const file = path.join(directory, 'state.json');
   try {
     const store = new StateStore(file);
     await store.init();
-    assert.equal(store.hasOnboardingShown('user'), false);
-    store.markOnboardingShown('user');
-    assert.equal(store.hasOnboardingShown('user'), true);
+    store.update((state) => { state.welcomePending = true; });
     await store.save();
 
     const restored = new StateStore(file);
     await restored.init();
-    assert.equal(restored.hasOnboardingShown('user'), true);
+    assert.equal(restored.get().welcomePending, true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import type { AppConfig } from './config.js';
-import { FIRST_RUN_GUIDE, HELP_TEXT, NO_SESSION_HINT, SESSION_ROUTING_HINT, parseBridgeCommand } from './commands.js';
+import { HELP_TEXT, SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
 import { ControlAgent } from './control.js';
 import type { InboundMessage, IlinkClient } from './ilink.js';
 import type {
@@ -16,7 +16,7 @@ import { formatModel, formatTimestamp } from './session-display.js';
 import { SessionManager, SessionOccupiedError } from './sessions.js';
 import { StateStore } from './state.js';
 
-type ReplySource = 'bridge' | 'control' | 'codex' | 'guide';
+type ReplySource = 'bridge' | 'control' | 'codex';
 
 export class BridgeApp {
   private readonly controlAgent: ControlAgent;
@@ -26,7 +26,6 @@ export class BridgeApp {
   private readonly draining = new Set<string>();
   private readonly handling = new Map<string, Promise<void>>();
   private readonly directHandling = new Map<string, Promise<void>>();
-  private readonly onboardingInFlight = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -77,6 +76,10 @@ export class BridgeApp {
         await this.offerTakeover(message.from, error).catch(() => undefined);
         return;
       }
+      if (isStaleSessionError(error)) {
+        await this.recoverStaleSession(message.from, message.text).catch(() => undefined);
+        return;
+      }
       await this.reply(message.from, userFacingError(error)).catch(() => undefined);
     }
   }
@@ -95,22 +98,19 @@ export class BridgeApp {
 
     const text = message.text.trim();
     if (!text) {
-      await this.sendFirstRunGuide(userId);
+      await this.sendPendingWelcome(userId);
       if (message.attachments.length) await this.reply(userId, `收到 ${message.attachments.length} 个附件；当前只处理文字。`);
       return;
     }
-
-    const firstRunGuideShown = await this.sendFirstRunGuide(userId);
 
     const existingBinding = this.store.getBinding(userId);
     if (existingBinding) this.store.setBinding(userId, { ...existingBinding, lastActivityAt: Date.now() });
 
     const command = parseBridgeCommand(text);
     const expired = this.controlExpired(userId);
-    if (expired) {
-      this.store.clearControl(userId);
-      await this.reply(userId, '会话管理 Agent 已过期；当前会话未改变。');
-    }
+    if (expired) this.store.clearControl(userId);
+    const automaticManagement = !command && !this.store.getControl(userId) && !this.store.getBinding(userId);
+    if (!automaticManagement) await this.sendPendingWelcome(userId);
 
     if (command?.kind === 'exit') {
       await this.exit(userId);
@@ -134,7 +134,7 @@ export class BridgeApp {
       return;
     }
     if (command?.kind === 'control') {
-      await this.handleControl(userId, command.text, firstRunGuideShown);
+      await this.handleControl(userId, command.text);
       return;
     }
 
@@ -145,14 +145,23 @@ export class BridgeApp {
 
     const binding = this.store.getBinding(userId);
     if (!binding) {
-      await this.reply(userId, NO_SESSION_HINT);
+      await this.handleControl(userId, text, 'no-session');
       return;
     }
     await this.sendToTarget(userId, text);
   }
 
-  private async handleControl(userId: string, text: string, skipControlIntro = false): Promise<void> {
-    const control = await this.ensureControl(userId, !skipControlIntro);
+  private async handleControl(userId: string, text: string, automaticReason?: 'no-session' | 'stale-session'): Promise<void> {
+    const alreadyInControl = Boolean(this.store.getControl(userId));
+    const control = await this.ensureControl(userId);
+    if (automaticReason && !alreadyInControl) {
+      const welcomePending = this.store.get().welcomePending;
+      const status = automaticReason === 'stale-session'
+        ? '当前会话已失效，已进入会话管理模式。'
+        : '当前没有会话，已进入会话管理模式。';
+      const sent = await this.reply(userId, welcomePending ? `${WELCOME_TEXT}\n\n${status}` : status);
+      if (sent && welcomePending) this.markWelcomeSent();
+    }
     if (!text.trim()) {
       await this.reply(userId, '请描述要查找、新建或切换的会话。', { source: 'control' });
       return;
@@ -363,7 +372,7 @@ export class BridgeApp {
     }
     const result = await this.sessions.send(userId, text);
     if (!result.accepted) {
-      await this.reply(userId, '当前没有会话。');
+      await this.handleControl(userId, text, 'no-session');
       return;
     }
     await this.reply(userId, '已发送，执行中……');
@@ -419,18 +428,26 @@ export class BridgeApp {
     try {
       const result = await this.sessions.send(userId, next);
       if (!result.accepted) {
-        await this.reply(userId, '排队消息未发送：没有当前会话。');
+        this.queued.delete(userId);
+        await this.handleControl(userId, next, 'no-session');
         return;
       }
       const remaining = this.queued.get(userId)?.length ?? 0;
       await this.reply(userId, `已继续${remaining ? `，剩余 ${remaining} 条` : ''}。`);
     } catch (error) {
-      const rest = this.queued.get(userId) ?? [];
-      this.queued.set(userId, [next, ...rest]);
       if (error instanceof SessionOccupiedError) {
+        const rest = this.queued.get(userId) ?? [];
+        this.queued.set(userId, [next, ...rest]);
         await this.offerTakeover(userId, error);
         return;
       }
+      if (isStaleSessionError(error)) {
+        this.queued.delete(userId);
+        await this.recoverStaleSession(userId, next);
+        return;
+      }
+      const rest = this.queued.get(userId) ?? [];
+      this.queued.set(userId, [next, ...rest]);
       await this.reply(userId, `排队消息暂未发送：${userFacingError(error)}`);
     }
   }
@@ -519,7 +536,7 @@ export class BridgeApp {
     }
   }
 
-  private async ensureControl(userId: string, announce = true): Promise<ControlState> {
+  private async ensureControl(userId: string): Promise<ControlState> {
     const current = this.store.getControl(userId);
     if (current) {
       const updated = { ...current, lastActivityAt: Date.now() };
@@ -528,8 +545,31 @@ export class BridgeApp {
     }
     const created = { startedAt: Date.now(), lastActivityAt: Date.now() };
     this.store.setControl(userId, created);
-    if (announce) await this.reply(userId, '已进入会话管理 Agent；发送“退出”离开。');
     return created;
+  }
+
+  private async sendPendingWelcome(userId: string): Promise<boolean> {
+    if (!this.store.get().welcomePending) return false;
+    const sent = await this.reply(userId, WELCOME_TEXT);
+    if (sent) this.markWelcomeSent();
+    return sent;
+  }
+
+  private markWelcomeSent(): void {
+    this.store.update((state) => {
+      state.welcomePending = false;
+    });
+  }
+
+  private async recoverStaleSession(userId: string, text: string): Promise<void> {
+    const binding = this.store.getBinding(userId);
+    if (binding) {
+      await this.sessions.release(userId).catch(() => undefined);
+      this.store.pushBindingHistory(userId, binding, this.config.bindingHistoryLimit);
+      this.store.clearBinding(userId);
+    }
+    this.queued.delete(userId);
+    await this.handleControl(userId, text, 'stale-session');
   }
 
   private async offerTakeover(userId: string, error: SessionOccupiedError): Promise<void> {
@@ -604,36 +644,15 @@ export class BridgeApp {
   }
 
   private sessionCreatedText(binding: SessionBinding): string {
-    return `已新建会话\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
+    return `已新建会话\n目录：${binding.cwd}\n${SESSION_ACTIVE_HINT}`;
   }
 
   private switchedText(binding: SessionBinding, prefix = '已切换会话'): string {
-    return `${prefix}\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
+    return `${prefix}\n目录：${binding.cwd}\n${SESSION_ACTIVE_HINT}`;
   }
 
   private forkedText(binding: SessionBinding): string {
-    return `已分叉新会话\n原会话仍保留，当前已绑定新会话\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
-  }
-
-  private async sendFirstRunGuide(userId: string): Promise<boolean> {
-    if (this.store.hasOnboardingShown(userId)) return false;
-    if (this.store.getBinding(userId)) {
-      this.store.markOnboardingShown(userId);
-      return false;
-    }
-    if (this.onboardingInFlight.has(userId)) return false;
-    this.onboardingInFlight.add(userId);
-    try {
-      const delivered = await this.reply(userId, FIRST_RUN_GUIDE, { source: 'guide' });
-      if (!delivered) return false;
-      this.store.markOnboardingShown(userId);
-      return true;
-    } catch (error) {
-      process.stderr.write(`[bridge] first-run guide failed: ${errorMessage(error)}\n`);
-      return false;
-    } finally {
-      this.onboardingInFlight.delete(userId);
-    }
+    return `已分叉新会话\n原会话仍保留，当前已绑定新会话\n目录：${binding.cwd}\n${SESSION_ACTIVE_HINT}`;
   }
 
   private async reply(
@@ -677,12 +696,8 @@ function errorMessage(error: unknown): string {
 function decorateReply(text: string, source: ReplySource): string {
   const value = text.trim();
   if (source === 'codex') return value;
-  if (source === 'guide') return `> **wecode 使用指南**\n\n${value}`;
   if (source === 'control') return `> **会话管理 Agent**\n\n${value}`;
-  return value
-    .split('\n')
-    .map((line, index) => index === 0 ? `> **wecode 系统** · ${line}` : `> ${line}`)
-    .join('\n');
+  return `> **wecode 系统**\n\n${value}`;
 }
 
 function controlErrorText(error: unknown): string {
@@ -701,10 +716,14 @@ function userFacingError(error: unknown): string {
     return '目标会话被占用；回复“确认接管”，或先结束外部任务。';
   }
   if (/no rollout found|thread not found/i.test(message)) {
-    return '当前会话已失效，请说“帅哥，帮我重新创建或恢复”。';
+    return '当前会话已失效，已进入会话管理模式。';
   }
   if (/项目目录不能为空|项目目录不存在|没有当前 Codex 会话|会话 ID|Claude Code/i.test(message)) return message;
   return '处理请求时遇到内部错误，请稍后重试；详细信息已记录在本地日志。';
+}
+
+function isStaleSessionError(error: unknown): boolean {
+  return /no rollout found|thread not found/i.test(errorMessage(error));
 }
 
 function isTakeoverConfirmation(text: string): boolean {

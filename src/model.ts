@@ -39,9 +39,9 @@ export interface BotState {
   botId: string;
   baseUrl: string;
   scannedUser: string;
+  welcomePending: boolean;
   cursor: string;
   contextTokens: Record<string, string>;
-  onboardingShown: Record<string, boolean>;
   bindings: Record<string, SessionBinding>;
   controls: Record<string, ControlState>;
   bindingHistory: Record<string, SessionBinding[]>;

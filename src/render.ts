@@ -17,6 +17,12 @@ export interface RenderInput {
   cwd?: string;
 }
 
+export interface SharePageOptions {
+  projectName?: string;
+  kind?: RenderInput['kind'];
+  description?: string;
+}
+
 export interface RenderedText {
   mode: 'chat';
   text: string;
@@ -129,6 +135,124 @@ function htmlEscape(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch);
 }
 
+const MAX_PAGE_TITLE_LENGTH = 80;
+const MAX_PAGE_DESCRIPTION_LENGTH = 180;
+
+function plainPageText(value: string): string {
+  return value
+    .replace(/^\s*#{1,6}\s+/, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_~]/g, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncatePageText(value: string, max: number): string {
+  const chars = Array.from(value);
+  return chars.length <= max ? value : `${chars.slice(0, Math.max(1, max - 1)).join('')}…`;
+}
+
+function firstMarkdownHeading(markdown: string): string | undefined {
+  let fenced = false;
+  let secondaryHeading: string | undefined;
+  for (const line of normalizeWechatText(markdown).split('\n')) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    const match = /^\s*(#{1,2})\s+(.+?)\s*$/.exec(line);
+    const value = match?.[2] ? plainPageText(match[2]) : '';
+    if (!value) continue;
+    if (match?.[1] === '#') return value;
+    secondaryHeading ??= value;
+  }
+  return secondaryHeading;
+}
+
+function firstMeaningfulPageLine(markdown: string): string | undefined {
+  let fenced = false;
+  for (const line of normalizeWechatText(markdown).split('\n')) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    const value = plainPageText(line);
+    if (value && !/^[-*_]{3,}$/.test(value)) return value;
+  }
+  return undefined;
+}
+
+function fallbackPageTitle(kind: RenderInput['kind'], reportLike: boolean): string {
+  if (reportLike || kind === 'report') return '项目分析';
+  if (kind === 'plan') return '执行计划';
+  if (kind === 'diff') return '代码变更摘要';
+  if (kind === 'code') return '代码内容';
+  return '分享内容';
+}
+
+function resolvePageTitle(
+  markdown: string,
+  requestedTitle: string | undefined,
+  kind: RenderInput['kind'],
+  reportLike: boolean,
+): string {
+  const explicit = requestedTitle ? plainPageText(requestedTitle) : '';
+  if (explicit) return truncatePageText(explicit, MAX_PAGE_TITLE_LENGTH);
+  const heading = firstMarkdownHeading(markdown);
+  if (heading) return truncatePageText(heading, MAX_PAGE_TITLE_LENGTH);
+  if (!reportLike && (!kind || kind === 'plain')) {
+    const firstLine = firstMeaningfulPageLine(markdown);
+    if (firstLine) return truncatePageText(firstLine, MAX_PAGE_TITLE_LENGTH);
+  }
+  return fallbackPageTitle(kind, reportLike);
+}
+
+function derivePageDescription(markdown: string, title: string): string {
+  for (const block of blocksOf(normalizeWechatText(markdown))) {
+    if (block.code) continue;
+    const value = plainPageText(block.text);
+    if (value && value !== title) return truncatePageText(value, MAX_PAGE_DESCRIPTION_LENGTH);
+  }
+  return truncatePageText(title, MAX_PAGE_DESCRIPTION_LENGTH);
+}
+
+function projectNameFromCwd(cwd?: string): string | undefined {
+  const value = cwd?.trim().replace(/[\\/]+$/, '');
+  if (!value) return undefined;
+  const nativeName = path.basename(value);
+  const name = nativeName === value ? path.win32.basename(value) : nativeName;
+  if (!name || name === '.' || name === '..') return undefined;
+  return truncatePageText(plainPageText(name), 48) || undefined;
+}
+
+function documentTitle(title: string, projectName?: string): string {
+  const parts = [title, projectName && projectName.toLowerCase() !== 'wecode' ? projectName : undefined, 'wecode']
+    .filter((value): value is string => Boolean(value));
+  return truncatePageText(parts.join(' · '), 120);
+}
+
+function pageTypeLabel(kind: RenderInput['kind']): string {
+  if (kind === 'report') return '项目分析';
+  if (kind === 'plan') return '执行计划';
+  if (kind === 'diff') return '代码变更';
+  if (kind === 'code') return '代码内容';
+  return '长文分享';
+}
+
+function stripLeadingTitleHeading(markdown: string, title: string): string {
+  const lines = markdown.split('\n');
+  let index = 0;
+  while (index < lines.length && !lines[index]?.trim()) index += 1;
+  const match = /^\s*#\s+(.+?)\s*$/.exec(lines[index] ?? '');
+  if (!match || plainPageText(match[1] ?? '') !== title) return markdown;
+  lines.splice(index, 1);
+  return lines.join('\n').replace(/^\n+/, '');
+}
+
 function safeHref(href: string): string | null {
   const value = href.trim();
   if (value.startsWith('#')) return value;
@@ -142,7 +266,7 @@ function safeHref(href: string): string | null {
 
 function slugForHeading(text: string): string {
   const normalized = text.replace(/<[^>]+>/g, '').trim().toLowerCase();
-  if (normalized === '报告附件正文') return 'report-attachments';
+  if (normalized === '引用文件正文') return 'attachments';
   return normalized
     .normalize('NFKD')
     .replace(/[^\p{Letter}\p{Number}]+/gu, '-')
@@ -173,31 +297,46 @@ function renderMarkdown(markdown: string): string {
   return typeof rendered === 'string' ? rendered : htmlEscape(markdown);
 }
 
-export function renderPageHtml(title: string, markdown: string): string {
-  const body = renderMarkdown(markdown);
+export function renderPageHtml(title: string, markdown: string, options: SharePageOptions = {}): string {
+  const safeTitle = truncatePageText(plainPageText(title) || '分享内容', MAX_PAGE_TITLE_LENGTH);
+  const projectName = options.projectName ? truncatePageText(plainPageText(options.projectName), 48) : undefined;
+  const description = truncatePageText(
+    plainPageText(options.description || derivePageDescription(markdown, safeTitle)) || safeTitle,
+    MAX_PAGE_DESCRIPTION_LENGTH,
+  );
+  const body = renderMarkdown(stripLeadingTitleHeading(markdown, safeTitle));
+  const titleWithBrand = documentTitle(safeTitle, projectName);
+  const projectLabel = projectName ? `<span class="project-label">· ${htmlEscape(projectName)}</span>` : '';
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0f172a">
-<title>${htmlEscape(title)}</title>
+<meta name="description" content="${htmlEscape(description)}">
+<meta name="robots" content="noindex, nofollow">
+<meta property="og:title" content="${htmlEscape(safeTitle)}">
+<meta property="og:description" content="${htmlEscape(description)}">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="wecode">
+<meta name="twitter:card" content="summary">
+<title>${htmlEscape(titleWithBrand)}</title>
 <style>
 :root{color-scheme:light;--ink:#172033;--muted:#64748b;--line:#dbe3ed;--soft:#f5f8fb;--navy:#0f172a;--green:#16a34a;--code:#0b1220}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#e9eef4;color:var(--ink);font:17px/1.8 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif}
 .skip-link{position:absolute;left:-9999px;top:12px}.skip-link:focus{left:12px;z-index:5;padding:8px 12px;border-radius:8px;background:#fff;color:var(--navy)}
 .page-shell{max-width:1024px;min-height:100vh;margin:0 auto;background:#fff;box-shadow:0 12px 40px rgba(15,23,42,.12)}
-.report-hero{position:relative;overflow:hidden;padding:30px 22px 34px;background:var(--navy);color:#f8fafc}.report-hero:after{content:"";position:absolute;width:190px;height:190px;right:-60px;top:-70px;border:1px solid rgba(134,239,172,.35);border-radius:50%;box-shadow:0 0 0 24px rgba(134,239,172,.06),0 0 0 48px rgba(134,239,172,.04)}
-.brand{position:relative;z-index:1;display:flex;align-items:center;gap:9px;color:#86efac;font-size:12px;font-weight:700;letter-spacing:.14em}.brand-mark{display:grid;place-items:center;width:24px;height:24px;border:1px solid #86efac;border-radius:6px;font-size:13px;letter-spacing:0}
-.report-hero h1{position:relative;z-index:1;max-width:780px;margin:24px 0 8px;font-size:clamp(1.75rem,6vw,2.65rem);line-height:1.18;letter-spacing:-.025em}.report-subtitle{position:relative;z-index:1;margin:0;color:#cbd5e1;font-size:14px}
-.report-content{padding:28px 22px 52px}.markdown-body{max-width:74ch;margin:0 auto}.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{color:var(--ink);line-height:1.3;scroll-margin-top:20px}.markdown-body h1{font-size:1.7rem;margin:0 0 1rem}.markdown-body h2{margin:2.2rem 0 .75rem;padding-left:12px;border-left:4px solid var(--green);font-size:1.35rem}.markdown-body h3{margin:1.7rem 0 .5rem;font-size:1.12rem}.markdown-body p{margin:0 0 1rem}.markdown-body ul,.markdown-body ol{padding-left:1.35rem}.markdown-body li+li{margin-top:.35rem}
+.share-hero{position:relative;overflow:hidden;padding:30px 22px 34px;background:var(--navy);color:#f8fafc}.share-hero:after{content:"";position:absolute;width:190px;height:190px;right:-60px;top:-70px;border:1px solid rgba(134,239,172,.35);border-radius:50%;box-shadow:0 0 0 24px rgba(134,239,172,.06),0 0 0 48px rgba(134,239,172,.04)}
+.brand{position:relative;z-index:1;display:flex;align-items:center;gap:9px;color:#86efac;font-size:12px;font-weight:700;letter-spacing:.14em}.brand-mark{display:grid;place-items:center;width:24px;height:24px;border:1px solid #86efac;border-radius:6px;font-size:13px;letter-spacing:0}.project-label{color:#cbd5e1;font-weight:500;letter-spacing:0}
+.share-hero h1{position:relative;z-index:1;max-width:780px;margin:24px 0 8px;font-size:clamp(1.75rem,6vw,2.65rem);line-height:1.18;letter-spacing:-.025em;overflow-wrap:anywhere}.share-subtitle{position:relative;z-index:1;margin:0;color:#cbd5e1;font-size:14px}
+.share-content{padding:28px 22px 52px}.markdown-body{max-width:74ch;margin:0 auto}.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{color:var(--ink);line-height:1.3;scroll-margin-top:20px}.markdown-body h1{font-size:1.7rem;margin:0 0 1rem}.markdown-body h2{margin:2.2rem 0 .75rem;padding-left:12px;border-left:4px solid var(--green);font-size:1.35rem}.markdown-body h3{margin:1.7rem 0 .5rem;font-size:1.12rem}.markdown-body p{margin:0 0 1rem}.markdown-body ul,.markdown-body ol{padding-left:1.35rem}.markdown-body li+li{margin-top:.35rem}
 .markdown-body a{color:#166534;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;overflow-wrap:anywhere}.markdown-body a:hover{color:#14532d}.markdown-body strong{color:#0f172a}.markdown-body hr{margin:2.5rem 0;border:0;border-top:1px solid var(--line)}
 .markdown-body blockquote{margin:1.25rem 0;padding:12px 16px;border-left:4px solid #94a3b8;background:var(--soft);color:#475569}.markdown-body code{padding:.15em .35em;border:1px solid #dbe3ed;border-radius:5px;background:#f1f5f9;font:0.88em ui-monospace,SFMono-Regular,Menlo,monospace}.markdown-body pre{margin:1.25rem 0;padding:16px;overflow:auto;border:1px solid #1e293b;border-radius:12px;background:var(--code);color:#e2e8f0;font:0.83em/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;-webkit-overflow-scrolling:touch}.markdown-body pre code{padding:0;border:0;background:transparent;color:inherit}.markdown-body table{display:block;width:max-content;min-width:100%;max-width:100%;overflow:auto;border-collapse:collapse;margin:1.25rem 0;font-size:.92em}.markdown-body th,.markdown-body td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}.markdown-body th{background:#f1f5f9;font-weight:700}.markdown-body img{display:block;max-width:100%;height:auto;border-radius:10px}.media-note{color:var(--muted);font-style:italic}
-.report-footer{padding:18px 22px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center}.report-footer span{color:var(--green)}
-@media(min-width:700px){.report-hero{padding:48px 64px 52px}.report-content{padding:48px 64px 72px}.report-footer{padding-left:64px;padding-right:64px}}
+.share-footer{padding:18px 22px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center}.share-footer span{color:var(--green)}
+@media(min-width:700px){.share-hero{padding:48px 64px 52px}.share-content{padding:48px 64px 72px}.share-footer{padding-left:64px;padding-right:64px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-@media print{body{background:#fff}.page-shell{box-shadow:none}.report-hero{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
-</style></head><body><a class="skip-link" href="#report-content">跳到正文</a><main class="page-shell"><header class="report-hero"><div class="brand"><span class="brand-mark">C</span><span>CODEX REPORT</span></div><h1>${htmlEscape(title)}</h1><p class="report-subtitle">可在手机上阅读的分析报告</p></header><article id="report-content" class="report-content markdown-body">${body}</article><footer class="report-footer">Generated by <span>Codex</span> · 临时分享页</footer></main></body></html>`;
+@media print{body{background:#fff}.page-shell{box-shadow:none}.share-hero{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+</style></head><body><a class="skip-link" href="#share-content">跳到正文</a><main class="page-shell"><header class="share-hero"><div class="brand"><span class="brand-mark">W</span><span>wecode</span>${projectLabel}</div><h1>${htmlEscape(safeTitle)}</h1><p class="share-subtitle">${htmlEscape(pageTypeLabel(options.kind))}</p></header><article id="share-content" class="share-content markdown-body">${body}</article><footer class="share-footer">Powered by <span>wecode</span> · 临时分享页 · 到期后失效</footer></main></body></html>`;
 }
 
-interface ReportAttachment {
+interface ReferencedMarkdownFile {
   absolutePath: string;
   relativePath: string;
   content: string;
@@ -217,12 +356,12 @@ function attachmentPath(raw: string, cwd: string, realCwd: string): { absolutePa
   return { absolutePath, relativePath };
 }
 
-async function loadReportAttachments(markdown: string, cwd?: string): Promise<ReportAttachment[]> {
+async function loadReferencedMarkdownFiles(markdown: string, cwd?: string): Promise<ReferencedMarkdownFile[]> {
   if (!cwd) return [];
   const realCwd = await realpath(cwd).catch(() => null);
   if (!realCwd) return [];
   const candidates = new Set(markdown.match(MARKDOWN_FILE_REFERENCE) ?? []);
-  const attachments: ReportAttachment[] = [];
+  const attachments: ReferencedMarkdownFile[] = [];
   let totalBytes = 0;
   for (const candidate of candidates) {
     const resolved = attachmentPath(candidate, cwd, realCwd);
@@ -241,18 +380,18 @@ async function loadReportAttachments(markdown: string, cwd?: string): Promise<Re
   return attachments;
 }
 
-async function includeReportAttachments(markdown: string, cwd?: string): Promise<string> {
-  const attachments = await loadReportAttachments(markdown, cwd);
+async function includeReferencedMarkdown(markdown: string, cwd?: string): Promise<string> {
+  const attachments = await loadReferencedMarkdownFiles(markdown, cwd);
   if (!attachments.length) return markdown;
   const rewritten = markdown.replace(MARKDOWN_LINK_REFERENCE, (full, label: string, target: string) => {
     const resolved = cwd ? attachmentPath(target, cwd, path.resolve(cwd)) : null;
     const attachment = resolved ? attachments.find((item) => item.relativePath === resolved.relativePath) : undefined;
-    return attachment ? `[${label}](#report-attachments)` : full;
+    return attachment ? `[${label}](#attachments)` : full;
   });
   const body = attachments
     .map((attachment) => `### \`${attachment.relativePath}\`\n\n${attachment.content.trim()}`)
     .join('\n\n---\n\n');
-  return `${rewritten}\n\n---\n\n## 报告附件正文\n\n${body}`;
+  return `${rewritten}\n\n---\n\n## 引用文件正文\n\n${body}`;
 }
 
 interface PageRecord {
@@ -278,10 +417,10 @@ export class PagePublisher {
     return this.sharePageError || '⚠️ 分享页暂不可用：未找到可用的 Cloudflare Tunnel。请安装 cloudflared，或配置 SHARE_PAGE_BASE_URL。';
   }
 
-  async publish(title: string, markdown: string): Promise<{ url: string; title: string }> {
+  async publish(title: string, markdown: string, options: SharePageOptions = {}): Promise<{ url: string; title: string }> {
     await this.ensureServer();
     const slug = randomBytes(12).toString('hex');
-    this.pages.set(slug, { html: renderPageHtml(title, markdown), expiresAt: Date.now() + this.config.pageTtlMs });
+    this.pages.set(slug, { html: renderPageHtml(title, markdown, options), expiresAt: Date.now() + this.config.pageTtlMs });
     const publicBaseUrl = await this.ensureTunnel();
     return { url: `${publicBaseUrl}/p/${slug}`, title };
   }
@@ -393,15 +532,13 @@ export async function renderResponse(input: RenderInput, pages: PagePublisher): 
   const safetyPage = length > 12_000;
   if (semanticPage || safetyPage) {
     try {
-      const title = input.title?.trim() || (
-        reportLike || input.kind === 'report'
-          ? 'Codex 分析报告'
-          : input.kind === 'diff'
-            ? 'Codex Diff'
-            : 'Codex 输出'
-      );
-      const pageMarkdown = await includeReportAttachments(input.text, input.cwd);
-      const page = await pages.publish(title, pageMarkdown);
+      const pageMarkdown = await includeReferencedMarkdown(input.text, input.cwd);
+      const title = resolvePageTitle(pageMarkdown, input.title, input.kind, reportLike);
+      const pageKind = reportLike || input.kind === 'report' ? 'report' : input.kind;
+      const page = await pages.publish(title, pageMarkdown, {
+        projectName: projectNameFromCwd(input.cwd),
+        kind: pageKind,
+      });
       // Keep the URL as the complete message so WeChat can recognize it as a
       // native link instead of treating it as part of a formatted label.
       return { mode: 'page', title: page.title, url: page.url, fallback: page.url };

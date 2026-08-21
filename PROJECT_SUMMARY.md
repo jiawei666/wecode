@@ -70,7 +70,7 @@ src/index.ts 根据命令执行 login 或 run。login 通过二维码取得 bot 
 
 ### 消息路由
 
-BridgeApp 先检查允许用户、保存 context token、进行消息去重，再处理状态、停止、退出、帮助四个本地命令、唤醒词和普通文本，见 [src/bridge.ts#L41](src/bridge.ts#L41)。需要查找、新建、切换或恢复会话时，只有“帅哥、靓仔、小哥哥、哥哥、大哥、老哥”等唤醒词会进入会话管理 Agent；没有当前 thread 绑定且未使用唤醒词时只返回提示。有绑定时，执行中的普通消息优先通过 App Server steer 当前 turn，无法 steer 时进入 FIFO 队列并在完成后自动续接。
+BridgeApp 先检查允许用户、保存 context token、进行消息去重，再处理状态、停止、退出、帮助四个本地命令、唤醒词和普通文本，见 [src/bridge.ts#L41](src/bridge.ts#L41)。已有当前 thread 绑定时，只有“帅哥、靓仔、小哥哥、哥哥、大哥、老哥”等唤醒词会进入会话管理 Agent；没有绑定或绑定已失效时，普通消息会自动进入会话管理模式并交给 Agent，不要求用户记住唤醒词。有绑定时，执行中的普通消息优先通过 App Server steer 当前 turn，无法 steer 时进入 FIFO 队列并在完成后自动续接。
 
 ### 会话与 App Server
 
@@ -91,7 +91,7 @@ ControlAgent 调用 codex exec --json --output-schema，让模型只返回 new_s
 已实现：
 
 - 微信二维码登录、iLink 长轮询、context token 保存、消息去重和文本分片。
-- `状态`、`停止`、`退出`、`帮助` 四个中文短词由桥接层本地执行；“帅哥、靓仔、小哥哥、哥哥、大哥、老哥”加需求作为会话管理 Agent 的唯一唤醒入口；不再保留任何斜杠命令、菜单、序号选择或 Raw 模式。
+- `状态`、`停止`、`退出`、`帮助` 四个中文短词由桥接层本地执行；已有当前会话时，“帅哥、靓仔、小哥哥、哥哥、大哥、老哥”加需求作为会话管理 Agent 的显式入口；没有当前会话时普通消息自动进入管理模式；不再保留任何斜杠命令、菜单、序号选择或 Raw 模式。
 - Codex thread 创建、恢复、列出、turn 启动和中断。
 - wecode 通过 Codex App Server 管理原生 thread，其他 Codex 客户端可独立连接同一服务；发生占用冲突时，只有用户明确确认后才会通过 App Server 请求中断活动 turn，并向精确持有目标 thread 锁的外部 Codex 进程发送退出信号，不删除锁文件或触碰其他进程。
 - turn 通知聚合：普通文本、plan、diff、report 等展示类型。

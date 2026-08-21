@@ -10,6 +10,7 @@ import { StateStore } from '../src/state.js';
 
 test('infers a share page for repository report requests', () => {
   assert.deepEqual(inferTurnPresentation('请分析这个仓库代码并生成总结报告'), { kind: 'report', presentation: 'page' });
+  assert.deepEqual(inferTurnPresentation('请把这段内容生成分享页'), { kind: 'plain', presentation: 'page' });
   assert.equal(inferTurnPresentation('你现在是什么模型'), undefined);
 });
 
@@ -265,7 +266,7 @@ test('releases App Server ownership before a binding is cancelled', async () => 
   const fakeAppServer = {
     onNotification: () => () => undefined,
     unsubscribe: async (threadId: string) => { events.push(`unsubscribe:${threadId}`); },
-    close: async () => undefined,
+    close: async () => { events.push('close'); },
   } as unknown as CodexAppServer;
   store.setBinding('user', {
     threadId: 'release-thread',
@@ -278,7 +279,7 @@ test('releases App Server ownership before a binding is cancelled', async () => 
 
   try {
     await manager.release('user');
-    assert.deepEqual(events, ['unsubscribe:release-thread']);
+    assert.deepEqual(events, ['unsubscribe:release-thread', 'close']);
   } finally {
     await manager.close();
     await store.save();
