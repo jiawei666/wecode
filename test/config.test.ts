@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config.js';
+import { backgroundArguments, daemonPaths } from '../src/daemon.js';
 
 test('resolves machine-specific paths and model settings from the supplied environment', () => {
   const projectRoot = '/workspace/wechatbot';
@@ -16,7 +17,7 @@ test('resolves machine-specific paths and model settings from the supplied envir
     CODEX_REASONING_EFFORT: 'high',
     CONTROL_MODEL: 'control-model',
     CONTROL_REASONING_EFFORT: 'medium',
-  }, projectRoot);
+  }, projectRoot, { configFile: path.join(projectRoot, '.config-test-missing.json') });
 
   assert.equal(config.dataDir, path.join(projectRoot, '.runtime-data'));
   assert.equal(config.homeDir, '/tmp/example-home');
@@ -30,7 +31,7 @@ test('resolves machine-specific paths and model settings from the supplied envir
 
 test('uses the repository directory as the portable discovery default', () => {
   const projectRoot = '/workspace/wechatbot';
-  const config = loadConfig({}, projectRoot);
+  const config = loadConfig({}, projectRoot, { configFile: path.join(projectRoot, '.config-test-missing.json') });
 
   assert.deepEqual(config.searchRoots, [projectRoot]);
   assert.equal(config.defaultCwd, projectRoot);
@@ -54,4 +55,19 @@ test('reads the small user config file without requiring environment variables',
   assert.equal(config.defaultCwd, '/workspace/projects/demo');
   assert.deepEqual(config.searchRoots, ['/workspace/projects']);
   assert.equal(config.allowedUser, 'wx-user');
+});
+
+test('prepares a detached invocation without replaying login commands', () => {
+  assert.deepEqual(
+    backgroundArguments(['/usr/bin/node', '/opt/wecode/index.js', 'login', '--background']),
+    ['/opt/wecode/index.js', '--background'],
+  );
+});
+
+test('stores daemon runtime files beside the user state', () => {
+  const config = loadConfig({}, '/workspace/wecode', { userHome: '/tmp/wecode-home' });
+  assert.deepEqual(daemonPaths(config), {
+    pidFile: '/tmp/wecode-home/.wecode/wecode.pid',
+    logFile: '/tmp/wecode-home/.wecode/wecode.log',
+  });
 });

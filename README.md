@@ -11,7 +11,6 @@
 
 ## 特点
 
-- 扫码登录，启动后直接使用，不需要 onboard。
 - Codex App Server 保存原生会话历史，wecode 只保存本地绑定和运行状态。
 - 手机上管理项目会话：新建、切换、恢复、停止和查看状态。
 - 长文案自动转成移动端网页，可选 Cloudflare Quick Tunnel 生成临时链接。
@@ -52,13 +51,21 @@ Windows 如果终端中 `codex` 可以运行但 wecode 仍提示找不到 Codex�
 }
 ```
 
-第一次运行会在终端显示二维码。微信扫码确认后，wecode 会自动保存状态并开始监听；以后仍然只需要执行：
+第一次运行会在终端显示二维码。微信扫码确认后，wecode 会自动保存状态、转入后台并返回终端；以后仍然只需要执行：
 
 ```bash
 wecode
 ```
 
-需要重新扫码时：
+首次扫码时终端会暂时等待二维码；后台运行后，常用命令是：
+
+```bash
+wecode status
+wecode logs
+wecode stop
+```
+
+需要重新扫码时，wecode 会先停止旧进程，登录成功后自动重新后台运行：
 
 ```bash
 wecode login
@@ -169,6 +176,7 @@ Quick Tunnel 适合临时阅读和开发测试，不是正式网站服务。链�
 ## 故障排查
 
 - `codex: command not found`：先确认 Codex CLI 已安装，并且 `codex --version` 可执行。
+- 后台启动后没有响应：执行 `wecode status` 和 `wecode logs` 查看进程与错误日志。
 - 分享页提示未安装 `cloudflared`：执行 `cloudflared --version`；如果命令不在 `PATH`，在配置文件中填写绝对路径。
 - 二维码过期：重新执行 `wecode login`。
 - 发现 `~/.cloudflared/config.yaml` 后 Quick Tunnel 无法启动：按照 [Cloudflare 说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) 暂时移开该配置文件。
