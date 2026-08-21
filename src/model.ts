@@ -39,6 +39,7 @@ export interface BotState {
   botId: string;
   baseUrl: string;
   scannedUser: string;
+  welcomePending: boolean;
   cursor: string;
   contextTokens: Record<string, string>;
   bindings: Record<string, SessionBinding>;

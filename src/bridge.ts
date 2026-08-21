@@ -1,5 +1,5 @@
 import type { AppConfig } from './config.js';
-import { HELP_TEXT, SESSION_ACTIVE_HINT, parseBridgeCommand } from './commands.js';
+import { HELP_TEXT, SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
 import { ControlAgent } from './control.js';
 import type { InboundMessage, IlinkClient } from './ilink.js';
 import type {
@@ -98,6 +98,7 @@ export class BridgeApp {
 
     const text = message.text.trim();
     if (!text) {
+      await this.sendPendingWelcome(userId);
       if (message.attachments.length) await this.reply(userId, `收到 ${message.attachments.length} 个附件；当前只处理文字。`);
       return;
     }
@@ -108,6 +109,8 @@ export class BridgeApp {
     const command = parseBridgeCommand(text);
     const expired = this.controlExpired(userId);
     if (expired) this.store.clearControl(userId);
+    const automaticManagement = !command && !this.store.getControl(userId) && !this.store.getBinding(userId);
+    if (!automaticManagement) await this.sendPendingWelcome(userId);
 
     if (command?.kind === 'exit') {
       await this.exit(userId);
@@ -148,10 +151,12 @@ export class BridgeApp {
     const alreadyInControl = Boolean(this.store.getControl(userId));
     const control = await this.ensureControl(userId);
     if (automaticReason && !alreadyInControl) {
+      const welcomePending = this.store.get().welcomePending;
       const status = automaticReason === 'stale-session'
-        ? '当前会话已失效，已自动进入会话管理模式。'
-        : '当前没有会话，已自动进入会话管理模式。';
-      await this.reply(userId, status);
+        ? '当前会话已失效，已进入会话管理模式。'
+        : '当前没有会话，已进入会话管理模式。';
+      const sent = await this.reply(userId, welcomePending ? `${WELCOME_TEXT}\n\n${status}` : status);
+      if (sent && welcomePending) this.markWelcomeSent();
     }
     if (!text.trim()) {
       await this.reply(userId, '请描述要查找、新建或切换的会话。', { source: 'control' });
@@ -477,6 +482,19 @@ export class BridgeApp {
     return created;
   }
 
+  private async sendPendingWelcome(userId: string): Promise<boolean> {
+    if (!this.store.get().welcomePending) return false;
+    const sent = await this.reply(userId, WELCOME_TEXT);
+    if (sent) this.markWelcomeSent();
+    return sent;
+  }
+
+  private markWelcomeSent(): void {
+    this.store.update((state) => {
+      state.welcomePending = false;
+    });
+  }
+
   private async recoverStaleSession(userId: string, text: string): Promise<void> {
     const binding = this.store.getBinding(userId);
     if (binding) {
@@ -606,10 +624,7 @@ function decorateReply(text: string, source: ReplySource): string {
   const value = text.trim();
   if (source === 'codex') return value;
   if (source === 'control') return `> **会话管理 Agent**\n\n${value}`;
-  return value
-    .split('\n')
-    .map((line, index) => index === 0 ? `> **wecode 系统** · ${line}` : `> ${line}`)
-    .join('\n');
+  return `> **wecode 系统**\n\n${value}`;
 }
 
 function controlErrorText(error: unknown): string {
@@ -628,7 +643,7 @@ function userFacingError(error: unknown): string {
     return '目标会话被占用；回复“确认接管”，或先结束外部任务。';
   }
   if (/no rollout found|thread not found/i.test(message)) {
-    return '当前会话已失效，已自动进入会话管理模式。';
+    return '当前会话已失效，已进入会话管理模式。';
   }
   if (/项目目录不能为空|项目目录不存在|没有当前 Codex 会话|会话 ID|Claude Code/i.test(message)) return message;
   return '处理请求时遇到内部错误，请稍后重试；详细信息已记录在本地日志。';

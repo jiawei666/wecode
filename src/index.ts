@@ -155,6 +155,7 @@ async function login(config: ReturnType<typeof loadConfig>, store: StateStore, c
     state.botId = result.botId;
     state.baseUrl = result.baseUrl;
     state.scannedUser = result.scannedUser;
+    state.welcomePending = true;
     state.cursor = '';
     state.lastError = '';
   });

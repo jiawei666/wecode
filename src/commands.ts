@@ -42,6 +42,8 @@ function parseControlInvocation(input: string): BridgeCommand | null {
 
 export const SESSION_ACTIVE_HINT = '后续普通消息将发送到当前 Codex 会话。';
 
+export const WELCOME_TEXT = '👋 欢迎使用 wecode！\n\n💬 直接发送任务即可。';
+
 export const HELP_TEXT = `主要入口：
 唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}
 

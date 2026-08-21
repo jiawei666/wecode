@@ -11,6 +11,7 @@ function emptyState(): BotState {
     botId: '',
     baseUrl: '',
     scannedUser: '',
+    welcomePending: false,
     cursor: '',
     contextTokens: {},
     bindings: {},
@@ -44,6 +45,7 @@ export class StateStore {
         ...emptyState(),
         ...loaded,
         contextTokens: loaded.contextTokens ?? {},
+        welcomePending: loaded.welcomePending ?? false,
         bindings: Object.fromEntries(
           Object.entries(loaded.bindings ?? {}).map(([userId, binding]) => [userId, normalizeBinding(binding)]),
         ),

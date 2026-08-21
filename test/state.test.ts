@@ -23,6 +23,23 @@ test('persists rapid consecutive state updates', async () => {
   }
 });
 
+test('persists the pending welcome state', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-welcome-'));
+  const file = path.join(directory, 'state.json');
+  try {
+    const store = new StateStore(file);
+    await store.init();
+    store.update((state) => { state.welcomePending = true; });
+    await store.save();
+
+    const restored = new StateStore(file);
+    await restored.init();
+    assert.equal(restored.get().welcomePending, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('persists binding history and notes', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-extra-'));
   const file = path.join(directory, 'state.json');
