@@ -2,6 +2,7 @@ export type BridgeCommand =
   | { kind: 'control'; text: string }
   | { kind: 'status' }
   | { kind: 'stop' }
+  | { kind: 'fork' }
   | { kind: 'exit' }
   | { kind: 'help' };
 
@@ -25,6 +26,9 @@ function parsePlainCommand(input: string): BridgeCommand | null {
       return { kind: 'status' };
     case '停止':
       return { kind: 'stop' };
+    case '分叉':
+    case '复制会话':
+      return { kind: 'fork' };
     case '退出':
       return { kind: 'exit' };
     case '帮助':
@@ -53,10 +57,11 @@ export const FIRST_RUN_GUIDE = `👋 欢迎使用 wecode！
 帅哥，帮我在“wecode”项目新建一个会话
 靓仔，帮我查找“wecode”项目最新的 5 个会话
 小哥哥，帮我切换到刚才那个会话
+分叉
 
-状态｜停止｜退出｜帮助`;
+状态｜停止｜分叉｜退出｜帮助`;
 
-export const STARTUP_HINT = `唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}；例如“帅哥，帮我查找项目最新的 5 个会话”。状态、停止、退出、帮助可直接使用。`;
+export const STARTUP_HINT = `唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}；例如“帅哥，帮我查找项目最新的 5 个会话”。状态、停止、分叉、退出、帮助可直接使用。`;
 
 export const HELP_TEXT = `主要入口：
 唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}
@@ -65,8 +70,9 @@ export const HELP_TEXT = `主要入口：
 “帅哥，帮我在‘wecode’项目新建一个会话”
 “靓仔，帮我查找‘wecode’项目最新的 5 个会话”
 “小哥哥，帮我切换到刚才那个会话”
+“分叉”或“复制会话”：从当前会话复制历史并新建对话
 
 唤醒后可查找、新建、切换和管理会话。
 
-状态｜停止｜退出｜帮助
-这四个词可直接使用，不需要斜杠。`;
+状态｜停止｜分叉｜退出｜帮助
+这五个词可直接使用，不需要斜杠。`;

@@ -5,6 +5,8 @@ import { parseBridgeCommand } from '../src/commands.js';
 test('keeps only deterministic local commands and honorific wake words', () => {
   assert.deepEqual(parseBridgeCommand('状态'), { kind: 'status' });
   assert.deepEqual(parseBridgeCommand('停止'), { kind: 'stop' });
+  assert.deepEqual(parseBridgeCommand('分叉'), { kind: 'fork' });
+  assert.deepEqual(parseBridgeCommand('复制会话'), { kind: 'fork' });
   assert.deepEqual(parseBridgeCommand('退出'), { kind: 'exit' });
   assert.deepEqual(parseBridgeCommand('帮助'), { kind: 'help' });
 

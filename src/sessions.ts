@@ -12,7 +12,7 @@ import type {
   ThreadTurnSummary,
   TurnResult,
 } from './model.js';
-import type { SessionAdapter } from './session-adapter.js';
+import type { ExternalWriterRelease, SessionAdapter } from './session-adapter.js';
 import { StateStore } from './state.js';
 
 interface TurnAccumulator {
@@ -33,6 +33,11 @@ const TAKEOVER_RETRY_DELAY_MS = 250;
 export interface SessionStatus {
   binding?: SessionBinding;
   running: boolean;
+}
+
+export interface SessionReleaseResult {
+  released: boolean;
+  externalWriter?: ExternalWriterRelease;
 }
 
 export class SessionOccupiedError extends Error {
@@ -98,6 +103,28 @@ export class SessionManager {
     const cwd = await this.validCwd(requestedCwd || (previous?.threadId === threadId ? previous.cwd : thread.cwd || this.config.defaultCwd));
     const inherited = previous?.threadId === threadId ? previous : undefined;
     const binding = this.makeBinding(thread, cwd, inherited, true, options);
+    this.bind(userId, binding);
+    return { binding };
+  }
+
+  async fork(
+    userId: string,
+    sourceThreadId: string,
+    requestedCwd?: string,
+    options: SessionLaunchOptions = {},
+  ): Promise<{ binding: SessionBinding }> {
+    if (!this.appServer.forkThread) throw new Error('当前 Codex 适配器不支持分叉会话');
+    const previous = this.store.getBinding(userId);
+    const launch = this.defaultLaunch(options);
+    const thread = await this.appServer.forkThread(sourceThreadId, launch);
+    if (previous?.threadId === sourceThreadId) await this.appServer.unsubscribe(sourceThreadId).catch(() => undefined);
+    const cwd = await this.validCwd(
+      requestedCwd
+        || thread.cwd
+        || (previous?.threadId === sourceThreadId ? previous.cwd : undefined)
+        || this.config.defaultCwd,
+    );
+    const binding = this.makeBinding(thread, cwd, undefined, true, launch);
     this.bind(userId, binding);
     return { binding };
   }
@@ -188,12 +215,14 @@ export class SessionManager {
     return false;
   }
 
-  async release(userId: string): Promise<boolean> {
+  async release(userId: string): Promise<SessionReleaseResult> {
     const binding = this.store.getBinding(userId);
-    if (!binding) return false;
+    if (!binding) return { released: false };
     await this.stop(userId);
     await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
-    return true;
+    if (process.platform !== 'win32' || !this.appServer.releaseExternalWriter) return { released: true };
+    const externalWriter = await this.appServer.releaseExternalWriter(binding.threadId).catch(() => undefined);
+    return { released: true, ...(externalWriter ? { externalWriter } : {}) };
   }
 
   async setNote(userId: string, note: string): Promise<SessionBinding> {

@@ -120,6 +120,10 @@ export class BridgeApp {
       await this.stop(userId);
       return;
     }
+    if (command?.kind === 'fork') {
+      await this.forkCurrent(userId);
+      return;
+    }
 
     if (command?.kind === 'help') {
       await this.reply(userId, HELP_TEXT);
@@ -166,7 +170,7 @@ export class BridgeApp {
     const context = `${currentContext}${previousContext}`;
     const feedback = control.executionFeedback ? `\n上一次 wecode 系统执行结果：${control.executionFeedback}` : '';
     const pendingTakeover = control.pendingTakeover
-      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先通过 Codex App Server 中断活动 turn；若外部客户端仍持有该 thread 锁，只向精确匹配的外部 Codex 进程发出退出信号，不删除锁文件，也不触碰其他进程。`
+      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先通过 Codex App Server 中断活动 turn；Windows 若仍有外部客户端持有该 thread 锁，不会强制关闭客户端，接管失败时会自动尝试分叉新会话。`
       : '';
     const prompt = `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
 
@@ -201,7 +205,7 @@ export class BridgeApp {
 
       this.store.setControl(userId, nextControl);
       await this.executeAction(userId, result.action, { allowTakeover: isTakeoverConfirmation(text) });
-      if (result.action.action === 'new_session' || result.action.action === 'switch_session') {
+      if (result.action.action === 'new_session' || result.action.action === 'switch_session' || result.action.action === 'fork_session') {
         this.store.clearControl(userId);
       }
     } catch (error) {
@@ -209,6 +213,7 @@ export class BridgeApp {
       if (this.controlAgent.consumeInterrupted(userId)) return;
       const latest = this.store.getControl(userId);
       if (error instanceof SessionOccupiedError) {
+        if (await this.forkAfterWindowsTakeover(userId, error)) return;
         await this.offerTakeover(userId, error);
         return;
       }
@@ -231,15 +236,27 @@ export class BridgeApp {
       }
       case 'switch_session': {
         if (!action.thread_id) throw new Error('切换会话缺少 thread_id');
+        const threadId = action.thread_id;
         if (action.takeover) {
           const pending = this.store.getControl(userId)?.pendingTakeover;
           if (!options.allowTakeover || !pending || pending.threadId !== action.thread_id) {
-            throw new Error('安全接管必须先明确确认当前待接管的目标会话');
+            // The control model can occasionally return takeover=true before
+            // the application has established a pending confirmation. Never
+            // honor that model output; fall back to an ordinary resume so an
+            // occupied target creates the proper confirmation flow.
+            action = { ...action, takeover: false };
           }
         }
         await this.stopBeforeSwitch(userId);
         await this.reply(userId, '正在恢复会话……');
-        await this.useSession(userId, action.thread_id, launchOptions(action), action.cwd, action.takeover === true);
+        await this.useSession(userId, threadId, launchOptions(action), action.cwd, action.takeover === true);
+        return;
+      }
+      case 'fork_session': {
+        if (!action.thread_id) throw new Error('分叉会话缺少 thread_id');
+        await this.stopBeforeSwitch(userId);
+        await this.reply(userId, '正在分叉会话……');
+        await this.forkSession(userId, action.thread_id, launchOptions(action), action.cwd);
         return;
       }
       case 'list_sessions':
@@ -288,6 +305,34 @@ export class BridgeApp {
     const threadId = await this.sessions.resolveThreadId(identifier);
     const result = await this.sessions.use(userId, threadId, requestedCwd, options, takeover);
     await this.reply(userId, this.switchedText(result.binding));
+  }
+
+  private async forkSession(
+    userId: string,
+    identifier: string,
+    options: SessionLaunchOptions = {},
+    requestedCwd?: string,
+  ): Promise<void> {
+    if (identifier.startsWith('cc:')) throw new Error('当前版本还未接入 Claude Code 适配器');
+    const threadId = await this.sessions.resolveThreadId(identifier);
+    const result = await this.sessions.fork(userId, threadId, requestedCwd, options);
+    await this.reply(userId, this.forkedText(result.binding));
+  }
+
+  private async forkCurrent(userId: string): Promise<void> {
+    const binding = this.store.getBinding(userId);
+    const pending = this.store.getControl(userId)?.pendingTakeover;
+    const sourceThreadId = pending?.threadId || binding?.threadId;
+    const sourceCwd = pending?.cwd || binding?.cwd;
+    if (!sourceThreadId) {
+      await this.reply(userId, '当前没有可分叉的会话。');
+      return;
+    }
+    await this.stopBeforeSwitch(userId);
+    await this.reply(userId, '正在分叉当前会话……');
+    const result = await this.sessions.fork(userId, sourceThreadId, sourceCwd, pending ? {} : (binding ?? {}));
+    this.store.clearControl(userId);
+    await this.reply(userId, this.forkedText(result.binding));
   }
 
   private async sendToTarget(userId: string, text: string): Promise<void> {
@@ -439,9 +484,14 @@ export class BridgeApp {
       await this.reply(userId, '当前没有会话管理流程或会话。');
       return;
     }
-    await this.sessions.release(userId);
+    const releaseResult = await this.sessions.release(userId);
     this.store.pushBindingHistory(userId, binding, this.config.bindingHistoryLimit);
     this.store.clearBinding(userId);
+    const externalWriter = releaseResult?.externalWriter;
+    if (externalWriter?.pids.length) {
+      await this.reply(userId, '已退出 wecode 当前绑定；历史仍保留。\n但 GPT/Codex 客户端仍持有该会话锁；为避免客户端崩溃，wecode 没有强制关闭它。请完全退出 GPT/Codex 客户端（包括托盘进程）后再继续。');
+      return;
+    }
     await this.reply(userId, '已退出当前会话；历史仍保留。');
   }
 
@@ -451,6 +501,22 @@ export class BridgeApp {
     await this.reply(userId, '正在停止任务……');
     this.queued.delete(userId);
     await this.sessions.stop(userId);
+  }
+
+  private async forkAfterWindowsTakeover(userId: string, error: SessionOccupiedError): Promise<boolean> {
+    if (process.platform !== 'win32' || !error.takeoverAttempted || !/Windows 外部 Codex 客户端持有目标锁/.test(error.message)) {
+      return false;
+    }
+    try {
+      await this.reply(userId, 'Windows Codex Desktop 仍占用原会话，正在复制已保存历史并创建新会话……');
+      const result = await this.sessions.fork(userId, error.threadId, error.cwd);
+      this.store.clearControl(userId);
+      await this.reply(userId, this.forkedText(result.binding));
+      return true;
+    } catch (forkError) {
+      process.stderr.write(`[control] Windows 会话分叉失败：${errorMessage(forkError)}\n`);
+      return false;
+    }
   }
 
   private async ensureControl(userId: string, announce = true): Promise<ControlState> {
@@ -470,12 +536,15 @@ export class BridgeApp {
     const current = this.store.getControl(userId);
     const now = Date.now();
     if (error.takeoverAttempted) {
+      const windowsClientProtected = process.platform === 'win32' && /Windows 外部 Codex 客户端持有目标锁/.test(error.message);
       const message = error.running
         ? '安全接管失败：外部客户端仍有活动任务，未能安全释放目标会话。'
         : '安全接管失败：任务已空闲，但未能释放持有目标锁的外部客户端。';
-      const nextStep = error.running
-        ? '请先在外部客户端停止任务并释放会话后重试；'
-        : '请先退出外部 Codex 客户端或关闭该会话后重试；';
+      const nextStep = windowsClientProtected
+        ? '为避免 GPT/Codex 客户端崩溃，Windows 不会自动强杀外部客户端；请先完全退出客户端（包括托盘进程）后重试，也可以发送“分叉当前会话”；'
+        : error.running
+          ? '请先在外部客户端停止任务并释放会话后重试；'
+          : '请先退出外部 Codex 客户端或关闭该会话后重试；';
       if (current) {
         const { pendingTakeover: _pendingTakeover, ...withoutPendingTakeover } = current;
         this.store.setControl(userId, {
@@ -503,7 +572,7 @@ export class BridgeApp {
     });
     await this.reply(
       userId,
-      `${message}\n回复“确认接管”进行安全接管；只会释放持有该目标锁的外部客户端。\n否则回复“退出”。`,
+      `${message}\n回复“确认接管”进行安全接管；Windows 若仍被外部客户端（Desktop）占用，会自动复制已保存历史创建新会话，不会强制关闭客户端。\n也可以回复“分叉当前会话”；否则回复“退出”。`,
       { source: 'bridge' },
     );
   }
@@ -540,6 +609,10 @@ export class BridgeApp {
 
   private switchedText(binding: SessionBinding, prefix = '已切换会话'): string {
     return `${prefix}\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
+  }
+
+  private forkedText(binding: SessionBinding): string {
+    return `已分叉新会话\n原会话仍保留，当前已绑定新会话\n目录：${binding.cwd}\n${SESSION_ROUTING_HINT}`;
   }
 
   private async sendFirstRunGuide(userId: string): Promise<boolean> {

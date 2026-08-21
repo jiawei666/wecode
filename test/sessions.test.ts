@@ -78,6 +78,35 @@ test('steers the active turn through the App Server', async () => {
   }
 });
 
+test('forks a source thread and binds the new child session', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-fork-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const events: string[] = [];
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    forkThread: async (threadId: string) => {
+      events.push(`fork:${threadId}`);
+      return { id: 'forked-thread', cwd: directory };
+    },
+    unsubscribe: async () => undefined,
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    const result = await manager.fork('user', 'source-thread', directory);
+    assert.deepEqual(events, ['fork:source-thread']);
+    assert.equal(result.binding.threadId, 'forked-thread');
+    assert.equal(result.binding.cwd, directory);
+    assert.equal(store.getBinding('user')?.threadId, 'forked-thread');
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('recreates a stale fresh binding before sending its first turn', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-stale-session-'));
   const events: string[] = [];

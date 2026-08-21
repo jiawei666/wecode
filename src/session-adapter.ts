@@ -17,7 +17,9 @@ export interface SessionAdapter {
   onNotification(listener: (notification: CodexNotification) => void): () => void;
   startThread(cwd: string, options?: SessionLaunchOptions): Promise<ThreadSummary>;
   resumeThread(threadId: string): Promise<ThreadSummary>;
-  /** Release only the external process that owns this exact thread lock. */
+  /** Create a new thread with a copy of the source thread's persisted history. */
+  forkThread?(threadId: string, options?: SessionLaunchOptions): Promise<ThreadSummary>;
+  /** Attempt to release only the external process that owns this exact thread lock. */
   releaseExternalWriter?(threadId: string): Promise<ExternalWriterRelease>;
   readThread(threadId: string): Promise<ThreadSnapshot>;
   listThreads(cwd?: string): Promise<ThreadSummary[]>;

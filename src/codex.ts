@@ -212,16 +212,17 @@ export class CodexAppServer {
     const model = options.model || this.config.codexModel;
     const reasoningEffort = options.reasoningEffort || this.config.codexReasoningEffort;
     const fast = options.fast ?? this.config.codexFast;
+    const threadConfig: Record<string, unknown> = {
+      service_tier: fast ? 'fast' : null,
+    };
+    if (reasoningEffort) threadConfig.model_reasoning_effort = reasoningEffort;
     const params: Record<string, unknown> = {
       cwd,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
       serviceName: 'wecode',
       serviceTier: fast ? 'fast' : null,
-      config: {
-        model_reasoning_effort: reasoningEffort,
-        service_tier: fast ? 'fast' : null,
-      },
+      config: threadConfig,
     };
     if (model) params.model = model;
     const result = await this.request<AppServerThreadResponse>('thread/start', params);
@@ -248,16 +249,37 @@ export class CodexAppServer {
     return { ...result.thread, cli: 'codex' };
   }
 
-  async releaseExternalWriter(threadId: string): Promise<ExternalWriterRelease> {
-    if (process.platform === 'win32') {
-      return {
-        attempted: false,
-        released: false,
-        pids: [],
-        detail: '当前平台无法安全识别持有 thread 锁的外部进程',
-      };
-    }
+  async forkThread(threadId: string, options: SessionLaunchOptions = {}): Promise<ThreadSummary> {
+    await this.connect();
+    const model = options.model || this.config.codexModel;
+    const reasoningEffort = options.reasoningEffort || this.config.codexReasoningEffort;
+    const fast = options.fast ?? this.config.codexFast;
+    const threadConfig: Record<string, unknown> = {
+      service_tier: fast ? 'fast' : null,
+    };
+    if (reasoningEffort) threadConfig.model_reasoning_effort = reasoningEffort;
+    const params: Record<string, unknown> = {
+      threadId,
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+      serviceTier: fast ? 'fast' : null,
+      config: threadConfig,
+    };
+    if (model) params.model = model;
+    const result = await this.request<AppServerThreadResponse>('thread/fork', params);
+    if (!result.thread?.id) throw new Error(`Codex thread could not be forked: ${threadId}`);
+    const thread = result.thread;
+    return {
+      ...thread,
+      cli: 'codex',
+      ...(thread.sessionId ? { sessionId: thread.sessionId } : {}),
+      model: thread.model || model,
+      reasoningEffort: thread.reasoningEffort || reasoningEffort,
+      serviceTier: thread.serviceTier ?? (fast ? 'fast' : null),
+    };
+  }
 
+  async releaseExternalWriter(threadId: string): Promise<ExternalWriterRelease> {
     const codexHome = process.env.CODEX_HOME?.trim() || path.join(homedir(), '.codex');
     const lockPath = path.resolve(codexHome, 'thread-writer-locks', `${threadId}.lock`);
     const owners = await externalWriterPids(lockPath, this.process?.pid);
@@ -270,15 +292,21 @@ export class CodexAppServer {
       };
     }
 
-    const signaled: number[] = [];
+    if (process.platform === 'win32') {
+      return {
+        attempted: false,
+        released: false,
+        pids: owners,
+        detail: '检测到 Windows 外部 Codex 客户端持有目标锁。为避免 GPT/Codex 客户端崩溃，wecode 不会强制结束该客户端；请先完全退出客户端（包括托盘进程）后重试',
+      };
+    }
+
+    // Keep every exact owner in the polling set. The process may exit between
+    // discovery and the signal, in which case taskkill/process.kill can report
+    // an error even though the lock is already released.
+    const signaled = [...owners];
     for (const pid of owners) {
-      try {
-        process.kill(pid, 'SIGINT');
-        signaled.push(pid);
-      } catch {
-        // The process may have exited between lsof and kill; polling below
-        // decides whether the exact lock was actually released.
-      }
+      await requestExternalWriterStop(pid);
     }
 
     if (await waitForLockRelease(lockPath, signaled, 2_000, this.process?.pid)) {
@@ -286,11 +314,7 @@ export class CodexAppServer {
     }
 
     for (const pid of signaled) {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        // The process may have exited while the graceful signal was pending.
-      }
+      await forceStopExternalWriter(pid);
     }
     const released = await waitForLockRelease(lockPath, signaled, 3_000, this.process?.pid);
     return {
@@ -451,7 +475,19 @@ export class CodexAppServer {
 async function externalWriterPids(lockPath: string, managedPid?: number): Promise<number[]> {
   let output = '';
   try {
-    const result = await execFile('lsof', ['-t', lockPath], { timeout: 3_000, maxBuffer: 32_000 });
+    const result = process.platform === 'win32'
+      ? await execFile('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        encodePowerShell(WINDOWS_LOCK_OWNER_SCRIPT),
+      ], {
+        timeout: 8_000,
+        maxBuffer: 32_000,
+        windowsHide: true,
+        env: { ...process.env, WECODE_LOCK_PATH: lockPath },
+      })
+      : await execFile('lsof', ['-t', lockPath], { timeout: 3_000, maxBuffer: 32_000 });
     output = result.stdout;
   } catch {
     return [];
@@ -459,11 +495,13 @@ async function externalWriterPids(lockPath: string, managedPid?: number): Promis
 
   const pids: number[] = [];
   for (const line of output.split(/\r?\n/)) {
-    const pid = Number(line.trim());
+    const pid = Number(line.trim().split(/\s+/u, 1)[0]);
     if (!Number.isInteger(pid) || pid <= 0 || pid === managedPid) continue;
     const command = await processCommand(pid);
     const normalized = command.toLowerCase();
-    if (!normalized.includes('codex') || normalized.includes('app-server')) continue;
+    // App Server processes can themselves own a thread writer (notably the
+    // Windows Desktop client), so only the exact managed PID is excluded.
+    if (!normalized.includes('codex')) continue;
     pids.push(pid);
   }
   return [...new Set(pids)];
@@ -471,12 +509,120 @@ async function externalWriterPids(lockPath: string, managedPid?: number): Promis
 
 async function processCommand(pid: number): Promise<string> {
   try {
-    const result = await execFile('ps', ['-o', 'command=', '-p', String(pid)], { timeout: 2_000, maxBuffer: 32_000 });
+    const result = process.platform === 'win32'
+      ? await execFile('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`,
+      ], { timeout: 3_000, maxBuffer: 32_000, windowsHide: true })
+      : await execFile('ps', ['-o', 'command=', '-p', String(pid)], { timeout: 2_000, maxBuffer: 32_000 });
     return result.stdout.trim();
   } catch {
     return '';
   }
 }
+
+async function requestExternalWriterStop(pid: number): Promise<void> {
+  try {
+    process.kill(pid, 'SIGINT');
+  } catch {
+    // The process may have exited between discovery and signaling.
+  }
+}
+
+async function forceStopExternalWriter(pid: number): Promise<void> {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // The process may have exited while the graceful signal was pending.
+  }
+}
+
+function encodePowerShell(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+const WINDOWS_LOCK_OWNER_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeCodeRestartManager {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RmUniqueProcess {
+    public int ProcessId;
+    public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+  }
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct RmProcessInfo {
+    public RmUniqueProcess Process;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string AppName;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string ServiceShortName;
+    public int ApplicationType;
+    public uint AppStatus;
+    public uint TerminalSessionId;
+    [MarshalAs(UnmanagedType.Bool)] public bool Restartable;
+  }
+
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  static extern int RmStartSession(out uint handle, int flags, StringBuilder sessionKey);
+
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  static extern int RmRegisterResources(
+    uint handle,
+    uint fileCount,
+    string[] files,
+    uint applicationCount,
+    RmUniqueProcess[] applications,
+    uint serviceCount,
+    string[] services);
+
+  [DllImport("rstrtmgr.dll")]
+  static extern int RmGetList(
+    uint handle,
+    out uint processInfoNeeded,
+    ref uint processInfoCount,
+    [In, Out] RmProcessInfo[] processInfo,
+    ref uint rebootReasons);
+
+  [DllImport("rstrtmgr.dll")]
+  static extern int RmEndSession(uint handle);
+
+  public static void PrintOwners(string file) {
+    uint handle;
+    var key = new StringBuilder(32);
+    var result = RmStartSession(out handle, 0, key);
+    if (result != 0) throw new Exception("RmStartSession=" + result);
+    try {
+      result = RmRegisterResources(handle, 1, new[] { file }, 0, null, 0, null);
+      if (result != 0) throw new Exception("RmRegisterResources=" + result);
+
+      uint needed = 0;
+      uint count = 0;
+      uint reasons = 0;
+      result = RmGetList(handle, out needed, ref count, null, ref reasons);
+      if (result != 0 && result != 234) throw new Exception("RmGetList=" + result);
+      if (needed == 0) return;
+
+      count = needed;
+      var owners = new RmProcessInfo[count];
+      result = RmGetList(handle, out needed, ref count, owners, ref reasons);
+      if (result != 0) throw new Exception("RmGetList2=" + result);
+      for (int index = 0; index < count; index++) {
+        Console.WriteLine(owners[index].Process.ProcessId + "\t" + owners[index].AppName);
+      }
+    } finally {
+      RmEndSession(handle);
+    }
+  }
+}
+"@
+[WeCodeRestartManager]::PrintOwners($env:WECODE_LOCK_PATH)
+`;
 
 async function waitForLockRelease(lockPath: string, pids: number[], timeoutMs: number, managedPid?: number): Promise<boolean> {
   if (!pids.length) return false;

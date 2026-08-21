@@ -32,6 +32,10 @@ test('validates required fields for control actions after schema parsing', () =>
     limit: 5,
     text: '## 最近 5 个会话',
   });
+  assert.deepEqual(parseAction('{"action":"fork_session","thread_id":"source-thread"}'), {
+    action: 'fork_session',
+    thread_id: 'source-thread',
+  });
   assert.equal(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":0,"text":"列表"}'), null);
   assert.equal(parseAction('{"action":"new_session"}'), null);
   assert.equal(parseAction('{"action":"raw_input","text":"hello"}'), null);

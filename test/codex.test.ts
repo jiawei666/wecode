@@ -25,6 +25,7 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
   });
   const websocketServer = new WebSocketServer({ server: httpServer });
   let params: Record<string, unknown> | undefined;
+  let forkParams: Record<string, unknown> | undefined;
   let readParams: Record<string, unknown> | undefined;
   let steerParams: Record<string, unknown> | undefined;
   websocketServer.on('connection', (socket) => {
@@ -35,6 +36,9 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
       } else if (message.method === 'thread/start' && message.id !== undefined) {
         params = message.params;
         socket.send(JSON.stringify({ id: message.id, result: { thread: { id: 'test-thread' } } }));
+      } else if (message.method === 'thread/fork' && message.id !== undefined) {
+        forkParams = message.params;
+        socket.send(JSON.stringify({ id: message.id, result: { thread: { id: 'forked-thread', cwd: '/workspace/project' } } }));
       } else if (message.method === 'thread/read' && message.id !== undefined) {
         readParams = message.params;
         socket.send(JSON.stringify({
@@ -61,7 +65,12 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
     assert.equal(params?.sandbox, 'danger-full-access');
     assert.equal(params?.serviceTier, null);
     assert.equal(params?.model, undefined);
+    assert.equal((params?.config as Record<string, unknown>).model_reasoning_effort, undefined);
     assert.deepEqual((params?.config as Record<string, unknown>).service_tier, null);
+    const forked = await appServer.forkThread('source-thread');
+    assert.equal(forked.id, 'forked-thread');
+    assert.equal(forkParams?.threadId, 'source-thread');
+    assert.equal((forkParams?.config as Record<string, unknown>).model_reasoning_effort, undefined);
     const snapshot = await appServer.readThread('test-thread');
     assert.equal(readParams?.threadId, 'test-thread');
     assert.equal(readParams?.includeTurns, true);

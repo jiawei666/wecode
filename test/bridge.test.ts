@@ -85,7 +85,7 @@ test('retries the first-run guide when its delivery fails', async () => {
   }
 });
 
-test('keeps four local commands while honorifics enter the session-management Agent', async () => {
+test('keeps deterministic local commands while honorifics enter the session-management Agent', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-local-command-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
@@ -144,6 +144,51 @@ test('keeps four local commands while honorifics enter the session-management Ag
     assert.match(sent.at(-1) || '', /会话管理 Agent/);
     assert.equal(store.getControl('user')?.sessionId, 'control-thread');
     assert.equal(controlRuns, 1);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('forks the current session with a direct local command', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-fork-command-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const forkedFrom: string[] = [];
+  store.setBinding('user', {
+    threadId: 'source-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  });
+  const fakeSessions = {
+    status: async () => ({ binding: store.getBinding('user'), running: false }),
+    fork: async (_userId: string, threadId: string, cwd: string) => {
+      forkedFrom.push(threadId);
+      const binding: SessionBinding = {
+        threadId: 'forked-thread',
+        cwd,
+        cli: 'codex',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      };
+      store.setBinding('user', binding);
+      return { binding };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+
+  try {
+    await bridge.handle(message('分叉', 'fork-command'));
+    assert.deepEqual(forkedFrom, ['source-thread']);
+    assert.equal(store.getBinding('user')?.threadId, 'forked-thread');
+    assert.match(sent.at(-1) || '', /已分叉新会话/);
   } finally {
     await bridge.close();
     await store.save();
@@ -357,7 +402,10 @@ test('requires explicit confirmation before safely taking over an occupied Codex
   let useCount = 0;
   const fakeControl = {
     run: async () => {
-      return { action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd }, sessionId: 'control-thread' };
+      return {
+        action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd, takeover: true },
+        sessionId: 'control-thread',
+      };
     },
     interrupt: async () => false,
     consumeInterrupted: () => false,
@@ -407,11 +455,12 @@ test('requires explicit confirmation before safely taking over an occupied Codex
   }
 });
 
-test('explains when an idle external client still holds the session lock', async () => {
+test('handles an idle external client that still holds the session lock', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-idle-lock-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   const sent: string[] = [];
+  let forkCalls = 0;
   const targetCwd = path.join(directory, 'agency-cloud-core');
   const fakeControl = {
     run: async () => ({
@@ -433,9 +482,21 @@ test('explains when an idle external client still holds the session lock', async
         'occupied-thread',
         targetCwd,
         false,
-        '目标任务已空闲，但外部客户端仍保持会话占用',
+        '检测到 Windows 外部 Codex 客户端持有目标锁',
         true,
       );
+    },
+    fork: async (_userId: string, _threadId: string, cwd: string) => {
+      forkCalls += 1;
+      const binding: SessionBinding = {
+        threadId: 'forked-thread',
+        cwd,
+        cli: 'codex',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      };
+      store.setBinding('user', binding);
+      return { binding };
     },
     close: async () => undefined,
   } as unknown as SessionManager;
@@ -446,9 +507,15 @@ test('explains when an idle external client still holds the session lock', async
   try {
     await bridge.handle(message('帅哥，帮我切换到 occupied-thread', 'idle-lock-1'));
     await bridge.handle(message('确认接管', 'idle-lock-2'));
-    assert.match(sent.at(-1) || '', /任务已空闲/);
-    assert.match(sent.at(-1) || '', /退出外部 Codex 客户端/);
-    assert.doesNotMatch(sent.at(-1) || '', /结束外部任务后重试/);
+    if (process.platform === 'win32') {
+      assert.equal(forkCalls, 1);
+      assert.equal(store.getBinding('user')?.threadId, 'forked-thread');
+      assert.match(sent.at(-1) || '', /已分叉新会话/);
+    } else {
+      assert.match(sent.at(-1) || '', /任务已空闲/);
+      assert.match(sent.at(-1) || '', /退出外部 Codex 客户端/);
+      assert.doesNotMatch(sent.at(-1) || '', /结束外部任务后重试/);
+    }
   } finally {
     await bridge.close();
     await store.save();

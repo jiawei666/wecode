@@ -55,6 +55,7 @@ export interface ActionResponse {
   action:
     | 'new_session'
     | 'switch_session'
+    | 'fork_session'
     | 'list_sessions'
     | 'status'
     | 'interrupt'
