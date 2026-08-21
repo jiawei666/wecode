@@ -40,7 +40,7 @@ function parseControlInvocation(input: string): BridgeCommand | null {
   return { kind: 'control', text: (match[2] ?? '').trim() };
 }
 
-export const SESSION_ROUTING_HINT = `普通消息→当前 Codex；唤醒词（${CONTROL_WAKE_WORDS_TEXT}）+需求→会话管理 Agent。`;
+export const SESSION_ROUTING_HINT = '普通消息→当前 Codex；输入唤醒词唤醒会话管理 Agent，输入“帮助”查看帮助。';
 
 export const NO_SESSION_HINT = `当前没有会话。\n唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}\n试试说“帅哥，帮我在项目名新建一个会话”。`;
 
