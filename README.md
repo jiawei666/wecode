@@ -21,9 +21,10 @@
 微信
  │ iLink
  ▼
-wecode（本机桥接层）
+wecode（本机桥接层，登录后自动后台运行）
  ├─ 普通消息 ───────────────► Codex App Server ─► Codex 原生 threads
  ├─ “帅哥，帮我……” ───────► 会话管理 Agent
+ ├─ status / login / stop / logs ─► 后台进程管理
  ├─ 状态 / 停止 / 退出 / 帮助 ─► 本地确定性操作
  └─ 长回答
       ├─ 本地临时 Markdown 页面
@@ -31,6 +32,8 @@ wecode（本机桥接层）
 
 ~/.wecode/config.json   用户配置
 ~/.wecode/state.json    iLink 凭证、微信绑定和 wecode 运行状态
+~/.wecode/wecode.pid    后台进程 PID
+~/.wecode/wecode.log    后台进程日志
 Codex 数据目录           Codex 原生会话历史
 ```
 
@@ -41,6 +44,12 @@ Codex 数据目录           Codex 原生会话历史
 ```bash
 npm install -g @jiawei666/wecode
 wecode
+```
+
+如果本机 npm 配置了其他 registry，请显式使用 npm 公共 registry：
+
+```bash
+npm install -g @jiawei666/wecode --registry=https://registry.npmjs.org/
 ```
 
 Windows 如果终端中 `codex` 可以运行但 wecode 仍提示找不到 Codex，执行 `where.exe codex`。如果结果是 npm 目录下的 `codex.cmd`，把绝对路径写入 `~/.wecode/config.json`：
@@ -64,6 +73,8 @@ wecode status
 wecode logs
 wecode stop
 ```
+
+后台进程由 wecode 自己管理，不需要安装或配置 systemd、launchd 等系统服务。
 
 需要重新扫码时，wecode 会先停止旧进程，登录成功后自动重新后台运行：
 
@@ -192,6 +203,8 @@ npm run lint
 npm run build
 npm run pack:check
 ```
+
+维护者发布版本时，遵循项目内的[版本发布 skill](.codex/skills/github-npm-release/SKILL.md)，确保 `package.json`、`package-lock.json`、Git tag、GitHub Release 和 npm 版本保持一致。
 
 ## 许可证
 

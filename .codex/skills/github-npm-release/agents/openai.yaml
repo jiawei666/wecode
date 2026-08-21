@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub + npm 发布"
+  short_description: "统一 GitHub 与 npm 版本并完成发布校验流程"
+  default_prompt: "使用 $github-npm-release 按本项目规范发布统一版本到 GitHub 和 npm。"
