@@ -42,6 +42,7 @@
     "start": "node dist/src/index.js",
     "test": "tsx --test test/**/*.test.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "setup:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
     "prepare": "npm run build",
     "prepublishOnly": "npm test && npm run lint",
     "pack:check": "npm pack --dry-run"

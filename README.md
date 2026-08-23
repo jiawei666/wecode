@@ -42,6 +42,19 @@ Codex 数据目录           Codex 原生会话历史
 
 要求：Node.js 22+，以及已经可以在终端运行的 [Codex CLI](https://developers.openai.com/codex/)。
 
+Windows 源码安装可直接执行下面的一键脚本；它会幂等检查/安装 Node.js、Codex CLI、cloudflared，构建项目并注册 `wecode` 命令，不使用 WSL2：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install-windows.ps1
+```
+
+只检查环境、不安装任何内容：
+
+```powershell
+.\scripts\install-windows.ps1 -CheckOnly
+```
+
 ```bash
 npm install -g @jiawei666/wecode
 wecode
@@ -60,6 +73,8 @@ Windows 如果终端中 `codex` 可以运行但 wecode 仍提示找不到 Codex�
   "codexCommand": "C:\\Users\\你的用户名\\AppData\\Roaming\\npm\\codex.cmd"
 }
 ```
+
+从源码安装后如果只执行了 `npm run build`，PowerShell 可能还没有 `wecode` 命令；执行 `npm link`，或重新运行上面的一键脚本即可。
 
 Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 Restart Manager 查询目标 thread 对应的精确锁文件。退出最后一个 wecode 绑定时会回收 wecode 自己的 App Server 连接/子进程；为避免 GPT/Codex Desktop 崩溃，Windows 不会自动强制结束外部持锁客户端。确认接管仍被占用时会自动通过 `thread/fork` 复制已保存历史并绑定新会话。如果必须继续使用原 thread，请先完全退出客户端（包括托盘进程）后重试。wecode 不会删除锁文件，也不会关闭其他无关进程。
 
@@ -148,7 +163,15 @@ sudo apt-get update
 sudo apt-get install cloudflared
 ```
 
-Windows 或其他架构：从 [Cloudflare 官方下载页](https://developers.cloudflare.com/tunnel/downloads/) 安装，并确保 `cloudflared` 在系统 `PATH` 中。
+Windows：PowerShell 推荐执行：
+
+```powershell
+winget install --id Cloudflare.cloudflared --source winget
+cloudflared --version
+wecode restart
+```
+
+或从 [Cloudflare 官方下载页](https://developers.cloudflare.com/tunnel/downloads/) 安装，并确保 `cloudflared` 在系统 `PATH` 中。其他架构也请使用官方下载安装包。
 
 ### 2. 直接使用
 
@@ -202,9 +225,15 @@ Quick Tunnel 适合临时阅读和开发测试，不是正式网站服务。链�
 
 ## 故障排查
 
+- `wecode` 无法识别：源码目录执行 `npm link`；如果刚安装了 Node.js 或 cloudflared，重新打开 PowerShell，再执行 `wecode restart`。
 - `codex: command not found`：先确认 Codex CLI 已安装，并且 `codex --version` 可执行。
+- 不需要 `/sessions`、`/use` 或序号切换：直接发送 `状态`、`停止`、`分叉`、`退出`、`帮助`，会话选择用自然语言描述。
+- `node:events ... Unhandled 'error' event`：通常是子进程命令不存在；重新运行 Windows 一键安装脚本，确认 `codex --version` 和 `cloudflared --version` 后再执行 `wecode restart`。
 - 后台启动后没有响应：执行 `wecode status` 和 `wecode logs` 查看进程与错误日志。
 - 分享页提示未安装 `cloudflared`：执行 `cloudflared --version`；如果命令不在 `PATH`，在配置文件中填写绝对路径。
+- `reasoning_effort must not be empty`：wecode 不会向 Codex 发送空的 `model_reasoning_effort`；如果仍出现，执行 `wecode restart` 后查看最新日志。
+- `timeout waiting for child process to exit`：这是 Codex App Server 刷新模型列表的外部警告；不影响已能使用的会话，先执行 `wecode restart`，持续出现时升级 Codex CLI。
+- `已在另一个应用中打开` 或接管失败：Windows 会保护外部 Codex Desktop，不会强杀持锁进程；完全退出 Desktop（包括托盘）后重试，或发送 `分叉` / `复制会话`。
 - 二维码过期：重新执行 `wecode login`。
 - 发现 `~/.cloudflared/config.yaml` 后 Quick Tunnel 无法启动：按照 [Cloudflare 说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) 暂时移开该配置文件。
 
