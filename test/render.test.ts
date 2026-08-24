@@ -41,6 +41,19 @@ test('automatically publishes a long repository report even without an explicit 
   assert.equal(result.mode, 'page');
 });
 
+test('keeps a short report reply in chat instead of publishing a page', async () => {
+  let published = false;
+  const pages = {
+    publish: async () => {
+      published = true;
+      return { title: '报告', url: 'https://share.example.test/p/report' };
+    },
+  } as unknown as PagePublisher;
+  const result = await renderResponse({ text: '# 分析报告\n\n结论很简单。', kind: 'report' }, pages);
+  assert.equal(published, false);
+  assert.equal(result.mode, 'chat');
+});
+
 test('embeds referenced local report files and returns a bare share URL', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-report-page-'));
   const reportPath = path.join(directory, 'PROJECT_SUMMARY.md');

@@ -188,7 +188,7 @@ export class SessionManager {
       const active = this.activeTurns.get(turnId);
       if (active) {
         active.kind = requestedPresentation.kind;
-        active.presentation = requestedPresentation.presentation;
+        if ('presentation' in requestedPresentation) active.presentation = requestedPresentation.presentation;
       }
     }
     this.store.setBinding(userId, { ...activeBinding, hasRollout: true, lastActivityAt: Date.now() });
@@ -584,12 +584,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function inferTurnPresentation(text: string): { kind: 'report' | 'plain'; presentation: 'page' } | undefined {
+export function inferTurnPresentation(text: string): { kind: 'report' } | { kind: 'plain'; presentation: 'page' } | undefined {
   const normalized = text.toLowerCase();
   const explicitReport = /总结报告|分析报告|审查报告|生成报告|长报告|\breport\b|\bsummary\b/i.test(normalized);
   const explicitShare = /分享页|sharepage/i.test(normalized);
   const repositorySummary = /(总结|分析|审查|评估|梳理).{0,24}(仓库|项目|代码|repo|repository|codebase|架构)/i.test(normalized);
-  if (explicitReport || repositorySummary) return { kind: 'report', presentation: 'page' };
+  if (explicitReport || repositorySummary) return { kind: 'report' };
   if (explicitShare) return { kind: 'plain', presentation: 'page' };
   return undefined;
 }

@@ -523,16 +523,17 @@ export class PagePublisher {
 
 export async function renderResponse(input: RenderInput, pages: PagePublisher): Promise<RenderedResponse> {
   const text = normalizeWechatText(input.text);
+  const pageMarkdown = await includeReferencedMarkdown(input.text, input.cwd);
   const length = Array.from(text).length;
-  const reportLike = looksLikeReport(input.text);
+  const reportLike = looksLikeReport(pageMarkdown);
+  const includesReferencedMarkdown = pageMarkdown !== input.text;
   const semanticPage = input.presentation === 'page'
-    || input.kind === 'report'
     || reportLike
+    || includesReferencedMarkdown
     || ((input.kind === 'plan' || input.kind === 'diff') && length > 1500);
   const safetyPage = length > 12_000;
   if (semanticPage || safetyPage) {
     try {
-      const pageMarkdown = await includeReferencedMarkdown(input.text, input.cwd);
       const title = resolvePageTitle(pageMarkdown, input.title, input.kind, reportLike);
       const pageKind = reportLike || input.kind === 'report' ? 'report' : input.kind;
       const page = await pages.publish(title, pageMarkdown, {
@@ -552,8 +553,8 @@ export async function renderResponse(input: RenderInput, pages: PagePublisher): 
 
 function looksLikeReport(input: string): boolean {
   const length = Array.from(normalizeWechatText(input)).length;
-  if (/(?:主报告|详细研究版|已完成分析并生成报告|生成了?总结报告|分析报告)/i.test(input)) return true;
   if (length < 1500) return false;
+  if (/(?:主报告|详细研究版|已完成分析并生成报告|生成了?总结报告|分析报告)/i.test(input)) return true;
   const headings = (input.match(/^\s*#{1,6}\s+/gm) ?? []).length;
   const markers = [
     /总结|报告|结论/i,

@@ -53,7 +53,13 @@ description: 为本项目执行统一版本发布：同步 package.json、packag
    npm whoami --registry=https://registry.npmjs.org/
    ```
 
-   未登录时提示用户自行执行 `npm login --registry=https://registry.npmjs.org/`。不要读取、索要、打印或写入 npm token；2FA/OTP 由用户在终端或浏览器中完成。
+   发布使用用户级环境变量 `NPM_TOKEN`，并由用户级 npm 配置引用它：
+
+   ```ini
+   //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+   ```
+
+   只检查 `npm whoami` 的结果，不读取、打印或把 token 写入仓库、skill 或命令行参数。若 `NPM_TOKEN` 未设置或认证失败，停止发布并提示用户重新配置凭证；2FA/OTP 由用户在终端或浏览器中完成。
 
 4. 检查目标版本没有被占用，并确认版本符合 SemVer。若目标版本已存在，不能覆盖或再次发布，必须选择下一个版本。
 
