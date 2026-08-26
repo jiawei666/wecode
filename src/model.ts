@@ -53,6 +53,7 @@ export interface BotState {
 
 export interface ActionResponse {
   action:
+    | 'request_catalog'
     | 'new_session'
     | 'switch_session'
     | 'fork_session'

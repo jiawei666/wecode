@@ -168,7 +168,6 @@ export class BridgeApp {
     }
 
     const current = this.store.getBinding(userId);
-    const catalog = await this.controlCatalog().catch(() => '当前暂时无法读取原生会话列表，请自行扫描默认项目根目录。');
     const previous = this.store.getBindingHistory(userId)[0];
     const currentContext = current
       ? `当前绑定：cli=${current.cli ?? 'codex'}\nthread_id=${current.threadId}\ncwd=${current.cwd}\n本地备注=${current.note || this.store.getSessionNote(current.threadId) || '无'}\n模型=${formatModel(current.model, current.reasoningEffort, current.fast ? 'fast' : null)}`
@@ -181,7 +180,11 @@ export class BridgeApp {
     const pendingTakeover = control.pendingTakeover
       ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先通过 Codex App Server 中断活动 turn；Windows 若仍有外部客户端持有该 thread 锁，不会强制关闭客户端，接管失败时会自动尝试分叉新会话。`
       : '';
-    const prompt = `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
+    const catalogState = control.sessionId
+      ? '本轮未重新加载原生会话 catalog；如果之前的会话管理对话中已有适用 catalog，可以继续使用；否则返回 request_catalog。'
+      : '当前尚未加载原生会话 catalog；如果本条请求需要历史会话，请返回 request_catalog。';
+    const makePrompt = (catalog: string): string => `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
+    const prompt = makePrompt(catalogState);
 
     await this.reply(userId, '处理中……');
     try {
@@ -193,7 +196,20 @@ export class BridgeApp {
         this.store.clearControl(userId);
         return;
       }
-      const result = await this.controlAgent.run(userId, prompt, control.sessionId);
+      let result = await this.controlAgent.run(userId, prompt, control.sessionId);
+      if (result.action.action === 'request_catalog') {
+        const requestSessionId = result.sessionId || control.sessionId;
+        this.store.setControl(userId, {
+          ...control,
+          ...(requestSessionId ? { sessionId: requestSessionId } : {}),
+          lastActivityAt: Date.now(),
+        });
+        const catalog = await this.controlCatalog().catch(() => '当前暂时无法读取原生会话列表，请自行扫描默认项目根目录。');
+        result = await this.controlAgent.run(userId, makePrompt(`原生会话 catalog 已加载，以下内容只供你筛选和生成展示文本，不能向用户暴露 thread_id：\n${catalog}`), requestSessionId);
+        if (result.action.action === 'request_catalog') {
+          throw new Error('会话管理 Agent 在 catalog 已加载后仍请求读取 catalog');
+        }
+      }
       const sessionId = result.sessionId || this.store.getControl(userId)?.sessionId;
       const nextControl: ControlState = {
         sessionId,
@@ -235,6 +251,8 @@ export class BridgeApp {
   private async executeAction(userId: string, action: ActionResponse, options: { allowTakeover?: boolean } = {}): Promise<void> {
     if (action.cli && action.cli !== 'codex') throw new Error('当前版本还未接入 Claude Code 适配器');
     switch (action.action) {
+      case 'request_catalog':
+        throw new Error('会话管理 Agent 的 request_catalog 未在调用流程中处理');
       case 'new_session': {
         if (!action.cwd) throw new Error('新建会话缺少项目目录');
         await this.stopBeforeSwitch(userId);
@@ -249,10 +267,8 @@ export class BridgeApp {
         if (action.takeover) {
           const pending = this.store.getControl(userId)?.pendingTakeover;
           if (!options.allowTakeover || !pending || pending.threadId !== action.thread_id) {
-            // The control model can occasionally return takeover=true before
-            // the application has established a pending confirmation. Never
-            // honor that model output; fall back to an ordinary resume so an
-            // occupied target creates the proper confirmation flow.
+            // Only an exact bridge-level confirmation with a matching pending
+            // target can authorize takeover=true.
             action = { ...action, takeover: false };
           }
         }

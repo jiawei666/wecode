@@ -90,6 +90,7 @@ test('automatically enters session management when a plain message has no sessio
   await store.init();
   const sent: string[] = [];
   let controlPrompt = '';
+  let catalogCalls = 0;
   const fakeControl = {
     run: async (_userId: string, prompt: string) => {
       controlPrompt = prompt;
@@ -100,7 +101,13 @@ test('automatically enters session management when a plain message has no sessio
     isRunning: () => false,
     close: async () => undefined,
   } as unknown as ControlAgent;
-  const fakeSessions = { list: async () => [], close: async () => undefined } as unknown as SessionManager;
+  const fakeSessions = {
+    list: async () => {
+      catalogCalls += 1;
+      return [];
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
   const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
   const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
@@ -111,7 +118,54 @@ test('automatically enters session management when a plain message has no sessio
     assert.match(sent.at(-1) || '', /会话管理 Agent 已响应/);
     assert.doesNotMatch(sent.join('\n'), /唤醒词|帅哥/);
     assert.match(controlPrompt, /帮我处理一个普通请求/);
+    assert.match(controlPrompt, /尚未加载原生会话 catalog/);
+    assert.equal(catalogCalls, 0);
     assert.equal(store.getControl('user')?.sessionId, 'control-thread');
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('loads the native session catalog only for an explicit session lookup', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-control-catalog-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  let catalogCalls = 0;
+  let controlPrompt = '';
+  let controlRuns = 0;
+  const fakeControl = {
+    run: async (_userId: string, prompt: string) => {
+      controlRuns += 1;
+      controlPrompt = prompt;
+      return controlRuns === 1
+        ? { action: { action: 'request_catalog' as const }, sessionId: 'control-thread' }
+        : { action: { action: 'reply' as const, text: '已读取会话。' }, sessionId: 'control-thread' };
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    list: async () => {
+      catalogCalls += 1;
+      return [];
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('帅哥，帮我查找最近的会话', 'catalog-1'));
+    assert.equal(catalogCalls, 1);
+    assert.equal(controlRuns, 2);
+    assert.match(controlPrompt, /原生会话 catalog 已加载/);
+    assert.match(sent.at(-1) || '', /已读取会话/);
   } finally {
     await bridge.close();
     await store.save();
@@ -282,6 +336,63 @@ test('forks the current session with a direct local command', async () => {
   }
 });
 
+test('lets the session-management Agent fork a selected historical session', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-fork-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const source = { id: 'source-thread', cwd: directory, preview: '历史会话', updatedAt: 1_700_000_000, cli: 'codex' as const };
+  let controlRuns = 0;
+  let catalogCalls = 0;
+  const fakeControl = {
+    run: async () => {
+      controlRuns += 1;
+      return controlRuns === 1
+        ? { action: { action: 'request_catalog' as const }, sessionId: 'control-thread' }
+        : { action: { action: 'fork_session' as const, thread_id: source.id, cwd: source.cwd }, sessionId: 'control-thread' };
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    status: async () => ({ running: false }),
+    list: async () => {
+      catalogCalls += 1;
+      return [source];
+    },
+    resolveThreadId: async (identifier: string) => identifier,
+    fork: async (_userId: string, threadId: string, cwd: string) => {
+      const binding: SessionBinding = {
+        threadId: `${threadId}-forked`,
+        cwd,
+        cli: 'codex',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      };
+      store.setBinding('user', binding);
+      return { binding };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('帮我复制第二个历史会话', 'control-fork-1'));
+    assert.equal(controlRuns, 2);
+    assert.equal(catalogCalls, 1);
+    assert.equal(store.getBinding('user')?.threadId, 'source-thread-forked');
+    assert.match(sent.at(-1) || '', /已分叉新会话/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('accepts continuous WeChat input and drains it in order after each turn', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-continuous-input-'));
   const store = new StateStore(path.join(directory, 'state.json'));
@@ -425,6 +536,11 @@ test('lets the session-management Agent format lists and resolve a natural-langu
       runCount += 1;
       return runCount === 1
         ? {
+          action: { action: 'request_catalog' as const },
+          sessionId: 'control-thread',
+        }
+        : runCount === 2
+        ? {
           action: {
             action: 'list_sessions' as const,
             cwd: target.cwd,
@@ -550,11 +666,15 @@ test('handles an idle external client that still holds the session lock', async 
   const sent: string[] = [];
   let forkCalls = 0;
   const targetCwd = path.join(directory, 'agency-cloud-core');
+  let controlRuns = 0;
   const fakeControl = {
-    run: async () => ({
-      action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd },
-      sessionId: 'control-thread',
-    }),
+    run: async () => {
+      controlRuns += 1;
+      return {
+        action: { action: 'switch_session' as const, thread_id: 'occupied-thread', cwd: targetCwd, takeover: controlRuns > 1 },
+        sessionId: 'control-thread',
+      };
+    },
     interrupt: async () => false,
     consumeInterrupted: () => false,
     isRunning: () => false,

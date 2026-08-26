@@ -22,10 +22,13 @@ test('keeps the control schema within Codex structured-output support', async ()
     'presentation',
     'reason',
   ]);
+  const properties = schema.properties as { action?: { enum?: string[] } };
+  assert.ok(properties.action?.enum?.includes('request_catalog'));
 });
 
 test('validates required fields for control actions after schema parsing', () => {
   assert.deepEqual(parseAction('{"action":"ask","text":"需要目录"}'), { action: 'ask', text: '需要目录' });
+  assert.deepEqual(parseAction('{"action":"request_catalog"}'), { action: 'request_catalog' });
   assert.deepEqual(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":5,"text":"## 最近 5 个会话"}'), {
     action: 'list_sessions',
     cwd: '/workspace/core',

@@ -7,6 +7,7 @@
     "action": {
       "type": "string",
       "enum": [
+        "request_catalog",
         "new_session",
         "switch_session",
         "fork_session",
