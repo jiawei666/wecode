@@ -23,15 +23,6 @@ export function parseBridgeCommand(input: string): BridgeCommand | null {
 function parsePlainCommand(input: string): BridgeCommand | null {
   switch (input.trim()) {
     case '状态':
-    case '怎么样了':
-    case '现在怎么样':
-    case '进展':
-    case '进度':
-    case '任务进展':
-    case '完成了吗':
-    case '做完了吗':
-    case '报告完成了吗':
-    case '报告好了吗':
       return { kind: 'status' };
     case '停止':
       return { kind: 'stop' };
