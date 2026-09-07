@@ -257,9 +257,13 @@ export class SessionManager {
     const thread = binding.hasRollout === false
       ? undefined
       : await this.appServer.resumeThread(binding.threadId).catch(() => undefined);
+    const currentBinding = thread
+      ? this.bindingWithNativeOptions(binding, thread)
+      : binding;
+    if (currentBinding !== binding) this.store.setBinding(userId, currentBinding);
     const nativeRunning = threadIsRunning(thread);
     return {
-      binding,
+      binding: currentBinding,
       running: nativeRunning || [...this.activeTurns.values()].some((turn) => turn.threadId === binding.threadId),
     };
   }
@@ -392,6 +396,20 @@ export class SessionManager {
       createdAt: previous?.createdAt ?? now,
       lastActivityAt: now,
     };
+  }
+
+  private bindingWithNativeOptions(binding: SessionBinding, thread: ThreadSummary): SessionBinding {
+    const serviceTier = thread.serviceTier;
+    let current = binding;
+    if (thread.model && thread.model !== current.model) current = { ...current, model: thread.model };
+    if (thread.reasoningEffort && thread.reasoningEffort !== current.reasoningEffort) {
+      current = { ...current, reasoningEffort: thread.reasoningEffort };
+    }
+    if (serviceTier !== undefined) {
+      const fast = isFastTier(serviceTier);
+      if (fast !== current.fast) current = { ...current, fast };
+    }
+    return current;
   }
 
   private defaultLaunch(options: SessionLaunchOptions): SessionLaunchOptions {

@@ -126,6 +126,44 @@ test('steers the active turn through the App Server', async () => {
   }
 });
 
+test('refreshes the concrete model and reasoning settings from the native thread', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-status-model-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  store.setBinding('user', {
+    threadId: 'model-thread',
+    cwd: directory,
+    model: '',
+    reasoningEffort: '',
+    fast: false,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  });
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    resumeThread: async () => ({
+      id: 'model-thread',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'max',
+      serviceTier: null,
+      status: { type: 'active' },
+    }),
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    const result = await manager.status('user');
+    assert.equal(result.binding?.model, 'gpt-5.6-luna');
+    assert.equal(result.binding?.reasoningEffort, 'max');
+    assert.equal(store.getBinding('user')?.model, 'gpt-5.6-luna');
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('forks a source thread and binds the new child session', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-fork-'));
   const store = new StateStore(path.join(directory, 'state.json'));
