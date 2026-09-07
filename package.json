@@ -1,6 +1,6 @@
 {
   "name": "@jiawei666/wecode",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "用微信控制本地 Codex，并把长文案变成临时手机分享页",
   "type": "module",
   "bin": {
@@ -38,7 +38,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "clean:build": "node scripts/clean-dist.mjs",
-    "build": "npm run clean:build && tsc -p tsconfig.build.json",
+    "build": "npm run clean:build && tsc -p tsconfig.build.json && node scripts/ensure-bin-executable.mjs",
     "start": "node dist/src/index.js",
     "test": "tsx --test test/**/*.test.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
