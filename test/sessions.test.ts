@@ -49,6 +49,55 @@ test('starts a fresh thread turn through the App Server', async () => {
   }
 });
 
+test('delivers a fast turn that completes before turn/start returns', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-fast-turn-'));
+  let listener: ((notification: CodexNotification) => void) | undefined;
+  const progress: string[] = [];
+  let finalText = '';
+  const fakeAppServer = {
+    onNotification: (callback: (notification: CodexNotification) => void) => {
+      listener = callback;
+      return () => undefined;
+    },
+    startThread: async () => ({ id: 'fast-thread', cwd: directory }),
+    startTurn: async () => {
+      listener?.({ method: 'item/reasoning/summaryTextDelta', params: { turnId: 'fast-turn', delta: '先快速整理报告' } });
+      listener?.({ method: 'item/agentMessage/delta', params: { turnId: 'fast-turn', delta: '报告已完成' } });
+      listener?.({
+        method: 'turn/completed',
+        params: { turnId: 'fast-turn', turn: { id: 'fast-turn', status: 'completed' } },
+      });
+      return 'fast-turn';
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const manager = new SessionManager(
+    loadConfig(),
+    store,
+    fakeAppServer,
+    async (result) => {
+      finalText = result.text;
+    },
+    async (update) => {
+      progress.push(`${update.kind}:${update.text}`);
+    },
+  );
+
+  try {
+    await manager.create('user', directory);
+    await manager.send('user', '生成报告');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(progress, ['reasoning:先快速整理报告']);
+    assert.equal(finalText, '报告已完成');
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('forwards Codex reasoning summaries before the final turn result', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-progress-'));
   let listener: ((notification: CodexNotification) => void) | undefined;

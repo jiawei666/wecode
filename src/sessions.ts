@@ -63,6 +63,10 @@ export class SessionOccupiedError extends Error {
 export class SessionManager {
   private activeTurns = new Map<string, TurnAccumulator>();
   private progressDeliveries = new Map<string, Promise<void>>();
+  private pendingNotifications = new Map<string, CodexNotification[]>();
+  private pendingNotificationTimers = new Map<string, NodeJS.Timeout>();
+  private completedTurns = new Set<string>();
+  private completedTurnTimers = new Map<string, NodeJS.Timeout>();
   private readonly unsubscribeNotifications: () => void;
 
   constructor(
@@ -77,6 +81,13 @@ export class SessionManager {
 
   async close(): Promise<void> {
     this.unsubscribeNotifications();
+    for (const timer of this.pendingNotificationTimers.values()) clearTimeout(timer);
+    for (const timer of this.completedTurnTimers.values()) clearTimeout(timer);
+    this.pendingNotificationTimers.clear();
+    this.completedTurnTimers.clear();
+    this.pendingNotifications.clear();
+    this.completedTurns.clear();
+    this.progressDeliveries.clear();
     await this.appServer.close();
   }
 
@@ -177,7 +188,7 @@ export class SessionManager {
       this.bind(userId, activeBinding);
       turnId = await this.appServer.startTurn(activeBinding.threadId, activeBinding.cwd, text, activeBinding);
     }
-    if (!this.activeTurns.has(turnId)) {
+    if (!this.activeTurns.has(turnId) && !this.completedTurns.has(turnId)) {
       this.activeTurns.set(turnId, {
         threadId: activeBinding.threadId,
         turnId,
@@ -186,6 +197,7 @@ export class SessionManager {
         startedAt: Date.now(),
       });
     }
+    this.replayPendingNotifications(turnId);
     const requestedPresentation = inferTurnPresentation(text);
     if (requestedPresentation) {
       const active = this.activeTurns.get(turnId);
@@ -283,7 +295,7 @@ export class SessionManager {
     if (notification.method === 'turn/started') {
       const turn = asRecord(params.turn);
       const threadId = stringValue(params.threadId) || stringValue(turn?.threadId);
-      const turnId = stringValue(turn?.id);
+      const turnId = stringValue(turn?.id) || stringValue(params.turnId);
       if (threadId && turnId && !this.activeTurns.has(turnId)) {
         this.activeTurns.set(turnId, {
           threadId,
@@ -293,12 +305,16 @@ export class SessionManager {
           startedAt: Date.now(),
         });
       }
+      if (turnId) this.replayPendingNotifications(turnId);
       return;
     }
 
     const turnId = stringValue(params.turnId) || stringValue(asRecord(params.turn)?.id) || '';
     const active = turnId ? this.activeTurns.get(turnId) : undefined;
-    if (!active) return;
+    if (!active) {
+      if (turnId && shouldBufferNotification(notification)) this.rememberPendingNotification(turnId, notification);
+      return;
+    }
 
     const progress = progressFromNotification(notification);
     if (progress) {
@@ -355,6 +371,7 @@ export class SessionManager {
       };
       const error = asRecord(turn?.error);
       if (error?.message) result.error = String(error.message);
+      this.rememberCompletedTurn(active.turnId);
       this.activeTurns.delete(active.turnId);
       this.touchThread(active.threadId);
       const progressDelivery = this.progressDeliveries.get(active.turnId) ?? Promise.resolve();
@@ -369,6 +386,41 @@ export class SessionManager {
     for (const [userId, binding] of Object.entries(this.store.get().bindings)) {
       if (binding.threadId === threadId) this.store.setBinding(userId, { ...binding, lastActivityAt: Date.now() });
     }
+  }
+
+  private rememberPendingNotification(turnId: string, notification: CodexNotification): void {
+    const pending = this.pendingNotifications.get(turnId) ?? [];
+    pending.push(notification);
+    this.pendingNotifications.set(turnId, pending);
+    if (this.pendingNotificationTimers.has(turnId)) return;
+    const timer = setTimeout(() => {
+      this.pendingNotifications.delete(turnId);
+      this.pendingNotificationTimers.delete(turnId);
+    }, 60_000);
+    timer.unref();
+    this.pendingNotificationTimers.set(turnId, timer);
+  }
+
+  private replayPendingNotifications(turnId: string): void {
+    const pending = this.pendingNotifications.get(turnId);
+    if (!pending) return;
+    this.pendingNotifications.delete(turnId);
+    const timer = this.pendingNotificationTimers.get(turnId);
+    if (timer) clearTimeout(timer);
+    this.pendingNotificationTimers.delete(turnId);
+    for (const notification of pending) this.handleNotification(notification);
+  }
+
+  private rememberCompletedTurn(turnId: string): void {
+    this.completedTurns.add(turnId);
+    const previous = this.completedTurnTimers.get(turnId);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.completedTurns.delete(turnId);
+      this.completedTurnTimers.delete(turnId);
+    }, 60_000);
+    timer.unref();
+    this.completedTurnTimers.set(turnId, timer);
   }
 
   private makeBinding(
@@ -613,6 +665,10 @@ function progressFromNotification(notification: CodexNotification): { kind: 'rea
   ];
   const text = candidates.find((value): value is string => typeof value === 'string' && value.length > 0);
   return text ? { kind, text } : undefined;
+}
+
+function shouldBufferNotification(notification: CodexNotification): boolean {
+  return notification.method.startsWith('item/') || notification.method.startsWith('turn/');
 }
 
 function stringValue(value: unknown): string | undefined {
