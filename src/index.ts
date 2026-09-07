@@ -9,14 +9,20 @@ import { acquireDaemon, daemonPaths, inspectDaemon, readDaemonLogs, releaseDaemo
 import { loginWithQr, IlinkClient } from './ilink.js';
 import { SessionManager } from './sessions.js';
 import { StateStore } from './state.js';
+import { tryInspectCodexRuntime } from './codex-runtime.js';
+import { WECODE_VERSION } from './version.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const background = args.includes('--background');
   const command = args.find((arg) => !arg.startsWith('-')) || 'run';
   const config = loadConfig();
+  if (args.includes('--version') || command === 'version') {
+    process.stdout.write(`${WECODE_VERSION}\n`);
+    return;
+  }
   if (args.includes('--help') || args.includes('-h') || command === 'help') {
-    process.stdout.write('用法：\n  wecode             首次扫码登录，之后自动后台运行\n  wecode login       重新扫码登录，完成后自动后台运行\n  wecode restart     重启后台进程，复用已有登录状态\n  wecode status      查看后台进程状态\n  wecode stop        停止后台进程\n  wecode logs        查看后台日志\n');
+    process.stdout.write('用法：\n  wecode             首次扫码登录，之后自动后台运行\n  wecode login       重新扫码登录，完成后自动后台运行\n  wecode restart     重启后台进程，复用已有登录状态\n  wecode status      查看后台进程和 Codex 版本\n  wecode stop        停止后台进程\n  wecode logs        查看后台日志\n  wecode --version   查看 wecode 版本\n');
     return;
   }
   await ensureConfigFile(config);
@@ -81,8 +87,14 @@ async function launchBackground(config: ReturnType<typeof loadConfig>): Promise<
 
 async function printStatus(config: ReturnType<typeof loadConfig>, store: StateStore): Promise<void> {
   const status = await inspectDaemon(config);
+  const codex = await tryInspectCodexRuntime(config.codexCommand);
+  const runtimeText = codex ? `${codex.version}（${codex.resolvedCommand}）` : `${config.codexCommand}（无法读取版本）`;
+  process.stdout.write(`wecode CLI 版本：${WECODE_VERSION}\nCodex CLI 版本：${runtimeText}\n`);
   if (status.running && status.owned) {
-    process.stdout.write(`wecode 正在后台运行，PID：${status.pid}\n日志：${daemonPaths(config).logFile}\n`);
+    process.stdout.write(`wecode 正在后台运行，PID：${status.pid}\n后台进程版本：${status.version || '旧进程未记录'}\n日志：${daemonPaths(config).logFile}\n`);
+    if (status.version && status.version !== WECODE_VERSION) {
+      process.stdout.write('检测到后台进程与当前 CLI 版本不一致；执行 wecode restart 以加载新版本。\n');
+    }
     return;
   }
   if (status.running && !status.owned) {
@@ -101,9 +113,17 @@ async function runBridge(config: ReturnType<typeof loadConfig>, store: StateStor
     const ilink = new IlinkClient({ ...config, apiBase: store.get().baseUrl || config.apiBase }, token);
     const appServer = new CodexAppServer(config);
     let bridge: BridgeApp | undefined;
-    const sessions = new SessionManager(config, store, appServer, async (result) => {
-      if (bridge) await bridge.onTurn(result);
-    });
+    const sessions = new SessionManager(
+      config,
+      store,
+      appServer,
+      async (result) => {
+        if (bridge) await bridge.onTurn(result);
+      },
+      async (progress) => {
+        if (bridge) await bridge.onTurnProgress(progress);
+      },
+    );
     bridge = new BridgeApp(config, store, ilink, sessions);
 
     let stopping = false;

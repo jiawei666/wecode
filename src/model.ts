@@ -88,6 +88,14 @@ export interface TurnResult {
   error?: string;
 }
 
+/** User-visible progress emitted from Codex's safe reasoning summary/preamble events. */
+export interface TurnProgress {
+  threadId: string;
+  turnId: string;
+  kind: 'reasoning' | 'preamble';
+  text: string;
+}
+
 export interface ThreadSummary {
   id: string;
   cli?: CliKind;

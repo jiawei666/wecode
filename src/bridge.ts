@@ -9,6 +9,7 @@ import type {
   PresentationMode,
   SessionBinding,
   SessionLaunchOptions,
+  TurnProgress,
   TurnResult,
 } from './model.js';
 import { renderResponse, PagePublisher } from './render.js';
@@ -18,6 +19,17 @@ import { StateStore } from './state.js';
 
 type ReplySource = 'bridge' | 'control' | 'codex';
 
+interface TurnProgressBuffer {
+  userId: string;
+  kind: TurnProgress['kind'];
+  text: string;
+  timer?: NodeJS.Timeout;
+  flushing?: Promise<unknown>;
+}
+
+const TURN_PROGRESS_FLUSH_DELAY_MS = 1_200;
+const TURN_PROGRESS_FLUSH_LENGTH = 240;
+
 export class BridgeApp {
   private readonly controlAgent: ControlAgent;
   private readonly pages: PagePublisher;
@@ -26,6 +38,7 @@ export class BridgeApp {
   private readonly draining = new Set<string>();
   private readonly handling = new Map<string, Promise<void>>();
   private readonly directHandling = new Map<string, Promise<void>>();
+  private readonly turnProgress = new Map<string, TurnProgressBuffer>();
 
   constructor(
     private readonly config: AppConfig,
@@ -40,6 +53,10 @@ export class BridgeApp {
   }
 
   async close(): Promise<void> {
+    for (const progress of this.turnProgress.values()) {
+      if (progress.timer) clearTimeout(progress.timer);
+    }
+    this.turnProgress.clear();
     await this.controlAgent.close();
     await this.pages.close();
     await this.sessions.close();
@@ -403,6 +420,9 @@ export class BridgeApp {
     // queue behind messages already waiting, instead of overtaking them.
     this.draining.add(userId);
     try {
+      const progressKey = turnProgressKey(result.threadId, result.turnId);
+      await this.flushTurnProgress(progressKey);
+      this.turnProgress.delete(progressKey);
       if (result.status === 'interrupted') await this.reply(userId, '任务已中断。');
       else if (result.status === 'failed') await this.reply(userId, `Codex 执行失败：${result.error || result.text || '未知错误'}`);
       else if (result.text.trim()) await this.reply(userId, result.text, {
@@ -416,6 +436,59 @@ export class BridgeApp {
     } finally {
       this.draining.delete(userId);
     }
+  }
+
+  async onTurnProgress(progress: TurnProgress): Promise<void> {
+    const entry = Object.entries(this.store.get().bindings).find(([, binding]) => binding.threadId === progress.threadId);
+    if (!entry || !progress.text.trim()) return;
+    const [userId] = entry;
+    const key = turnProgressKey(progress.threadId, progress.turnId);
+    let buffer = this.turnProgress.get(key);
+    if (!buffer) {
+      buffer = { userId, kind: progress.kind, text: '' };
+      this.turnProgress.set(key, buffer);
+    }
+    if (buffer.kind !== progress.kind && buffer.text.trim()) await this.flushTurnProgress(key);
+    buffer.kind = progress.kind;
+    buffer.text += progress.text;
+    if (buffer.text.length >= TURN_PROGRESS_FLUSH_LENGTH) {
+      await this.flushTurnProgress(key);
+      return;
+    }
+    if (!buffer.timer) {
+      buffer.timer = setTimeout(() => {
+        void this.flushTurnProgress(key).catch((error) => {
+          process.stderr.write(`[bridge] progress flush failed: ${errorMessage(error)}\n`);
+        });
+      }, TURN_PROGRESS_FLUSH_DELAY_MS);
+      buffer.timer.unref();
+    }
+  }
+
+  private async flushTurnProgress(key: string): Promise<void> {
+    const buffer = this.turnProgress.get(key);
+    if (!buffer) return;
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = undefined;
+    }
+    if (buffer.flushing) {
+      await buffer.flushing;
+      if (buffer.text.trim()) await this.flushTurnProgress(key);
+      return;
+    }
+    const text = buffer.text.trim();
+    if (!text) return;
+    buffer.text = '';
+    const label = buffer.kind === 'reasoning' ? '思路摘要' : '处理提示';
+    const sending = this.reply(buffer.userId, `${label}：${text}`, { source: 'codex' });
+    buffer.flushing = sending;
+    try {
+      await sending;
+    } finally {
+      if (buffer.flushing === sending) buffer.flushing = undefined;
+    }
+    if (buffer.text.trim()) await this.flushTurnProgress(key);
   }
 
   private async drainQueue(userId: string): Promise<void> {
@@ -714,6 +787,10 @@ function decorateReply(text: string, source: ReplySource): string {
   if (source === 'codex') return value;
   if (source === 'control') return `> **会话管理 Agent**\n\n${value}`;
   return `> **wecode 系统**\n\n${value}`;
+}
+
+function turnProgressKey(threadId: string, turnId: string): string {
+  return `${threadId}:${turnId}`;
 }
 
 function controlErrorText(error: unknown): string {

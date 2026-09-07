@@ -10,6 +10,7 @@ import type {
   ThreadSnapshot,
   ThreadSummary,
   ThreadTurnSummary,
+  TurnProgress,
   TurnResult,
 } from './model.js';
 import type { ExternalWriterRelease, SessionAdapter } from './session-adapter.js';
@@ -61,6 +62,7 @@ export class SessionOccupiedError extends Error {
 
 export class SessionManager {
   private activeTurns = new Map<string, TurnAccumulator>();
+  private progressDeliveries = new Map<string, Promise<void>>();
   private readonly unsubscribeNotifications: () => void;
 
   constructor(
@@ -68,6 +70,7 @@ export class SessionManager {
     private readonly store: StateStore,
     private readonly appServer: SessionAdapter,
     private readonly onTurn: (result: TurnResult) => Promise<void>,
+    private readonly onProgress: (progress: TurnProgress) => Promise<void> = async () => undefined,
   ) {
     this.unsubscribeNotifications = this.appServer.onNotification((notification) => this.handleNotification(notification));
   }
@@ -293,6 +296,24 @@ export class SessionManager {
     const active = turnId ? this.activeTurns.get(turnId) : undefined;
     if (!active) return;
 
+    const progress = progressFromNotification(notification);
+    if (progress) {
+      const update: TurnProgress = {
+        threadId: active.threadId,
+        turnId: active.turnId,
+        kind: progress.kind,
+        text: progress.text,
+      };
+      const previous = this.progressDeliveries.get(active.turnId) ?? Promise.resolve();
+      const delivery = previous
+        .then(() => this.onProgress(update))
+        .catch((error) => {
+          process.stderr.write(`[session] progress delivery failed: ${errorText(error)}\n`);
+        });
+      this.progressDeliveries.set(active.turnId, delivery);
+      return;
+    }
+
     if (notification.method === 'item/agentMessage/delta') {
       const itemId = stringValue(params.itemId) || stringValue(params.agentMessageId) || 'agent-message';
       const delta = stringValue(params.delta) || stringValue(params.text) || '';
@@ -332,7 +353,11 @@ export class SessionManager {
       if (error?.message) result.error = String(error.message);
       this.activeTurns.delete(active.turnId);
       this.touchThread(active.threadId);
-      void this.onTurn(result).catch((error) => process.stderr.write(`[session] turn delivery failed: ${String(error)}\n`));
+      const progressDelivery = this.progressDeliveries.get(active.turnId) ?? Promise.resolve();
+      this.progressDeliveries.delete(active.turnId);
+      void progressDelivery
+        .then(() => this.onTurn(result))
+        .catch((error) => process.stderr.write(`[session] turn delivery failed: ${String(error)}\n`));
     }
   }
 
@@ -546,6 +571,30 @@ export class SessionManager {
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
+function progressFromNotification(notification: CodexNotification): { kind: 'reasoning' | 'preamble'; text: string } | undefined {
+  const method = notification.method.toLowerCase();
+  const kind = method.includes('reasoning') && method.includes('summary')
+    ? 'reasoning'
+    : method.includes('preamble')
+      ? 'preamble'
+      : undefined;
+  if (!kind) return undefined;
+
+  const params = notification.params;
+  const item = asRecord(params.item);
+  const candidates = [
+    params.delta,
+    params.text,
+    params.summary,
+    params.summaryText,
+    item?.delta,
+    item?.text,
+    item?.summary,
+  ];
+  const text = candidates.find((value): value is string => typeof value === 'string' && value.length > 0);
+  return text ? { kind, text } : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

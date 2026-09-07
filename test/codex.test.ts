@@ -99,3 +99,57 @@ test('reports a missing Codex executable instead of crashing on spawn error', as
   );
   await appServer.close();
 });
+
+test('reconnects after the Codex App Server socket closes', async () => {
+  const httpServer = createServer((request, response) => {
+    if (request.url === '/readyz') {
+      response.writeHead(200);
+      response.end('ok');
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  const websocketServer = new WebSocketServer({ server: httpServer });
+  let threadStarts = 0;
+  let resolveFirstConnectionClosed: (() => void) | undefined;
+  const firstConnectionClosed = new Promise<void>((resolve) => {
+    resolveFirstConnectionClosed = resolve;
+  });
+
+  websocketServer.on('connection', (socket) => {
+    let startedOnThisSocket = false;
+    socket.on('close', () => {
+      if (startedOnThisSocket) resolveFirstConnectionClosed?.();
+    });
+    socket.on('message', (raw) => {
+      const message = JSON.parse(String(raw)) as { id?: number; method?: string };
+      if (message.method === 'initialize' && message.id !== undefined) {
+        socket.send(JSON.stringify({ id: message.id, result: {} }));
+      } else if (message.method === 'thread/start' && message.id !== undefined) {
+        threadStarts += 1;
+        startedOnThisSocket = true;
+        socket.send(JSON.stringify({ id: message.id, result: { thread: { id: `thread-${threadStarts}` } } }));
+        if (threadStarts === 1) socket.close();
+      }
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = httpServer.address();
+  if (!address || typeof address === 'string') throw new Error('test server did not expose a port');
+
+  const appServer = new CodexAppServer({ ...loadConfig(), codexEndpoint: `ws://127.0.0.1:${address.port}` });
+  try {
+    assert.equal((await appServer.startThread('/workspace/project')).id, 'thread-1');
+    await firstConnectionClosed;
+    assert.equal((await appServer.startThread('/workspace/project')).id, 'thread-2');
+  } finally {
+    await appServer.close();
+    await new Promise<void>((resolve) => websocketServer.close(() => resolve()));
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }
+});

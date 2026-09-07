@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { parseAction } from '../src/control.js';
+import { controlInstructions, parseAction } from '../src/control.js';
+
+test('allows explicit local maintenance mode without resetting the control session', () => {
+  const instructions = controlInstructions('/workspace', ['/workspace/projects']);
+  assert.match(instructions, /本机维护模式/);
+  assert.match(instructions, /终端、文件和进程工具/);
+  assert.match(instructions, /不要主动清除或重建会话管理 Agent 的 Codex 会话/);
+  assert.match(instructions, /action=reply/);
+});
 
 test('keeps the control schema within Codex structured-output support', async () => {
   const schema = JSON.parse(await readFile(new URL('../schemas/control-action.json', import.meta.url), 'utf8')) as Record<string, unknown>;

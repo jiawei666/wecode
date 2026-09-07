@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../src/config.js';
-import { CodexAppServer } from '../src/codex.js';
+import { CodexAppServer, type CodexNotification } from '../src/codex.js';
 import { inferTurnPresentation, SessionManager, SessionOccupiedError } from '../src/sessions.js';
 import { StateStore } from '../src/state.js';
 
@@ -42,6 +42,53 @@ test('starts a fresh thread turn through the App Server', async () => {
     assert.deepEqual(events, ['thread']);
     await manager.send('user', '你现在是什么模型');
     assert.deepEqual(events, ['thread', 'turn']);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('forwards Codex reasoning summaries before the final turn result', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-progress-'));
+  let listener: ((notification: CodexNotification) => void) | undefined;
+  const progress: string[] = [];
+  const results: string[] = [];
+  const fakeAppServer = {
+    onNotification: (callback: (notification: CodexNotification) => void) => {
+      listener = callback;
+      return () => undefined;
+    },
+    startThread: async () => ({ id: 'progress-thread', cwd: directory }),
+    startTurn: async () => 'turn-progress',
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const manager = new SessionManager(
+    loadConfig(),
+    store,
+    fakeAppServer,
+    async (result) => {
+      results.push(result.text);
+    },
+    async (update) => {
+      progress.push(`${update.kind}:${update.text}`);
+    },
+  );
+
+  try {
+    await manager.create('user', directory);
+    await manager.send('user', '开始工作');
+    listener?.({ method: 'item/reasoning/summaryTextDelta', params: { turnId: 'turn-progress', delta: '先检查项目结构' } });
+    listener?.({ method: 'item/agentMessage/delta', params: { turnId: 'turn-progress', delta: '最终答案' } });
+    listener?.({
+      method: 'turn/completed',
+      params: { turnId: 'turn-progress', turn: { id: 'turn-progress', status: 'completed' } },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(progress, ['reasoning:先检查项目结构']);
+    assert.deepEqual(results, ['最终答案']);
   } finally {
     await manager.close();
     await store.save();

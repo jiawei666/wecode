@@ -4,9 +4,11 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import type { AppConfig } from './config.js';
+import { tryInspectCodexRuntime, type CodexRuntimeInfo } from './codex-runtime.js';
 import type { SessionLaunchOptions, ThreadSnapshot, ThreadSummary } from './model.js';
 import { codexProcessError, spawnCodex } from './process.js';
 import type { ExternalWriterRelease } from './session-adapter.js';
+import { WECODE_VERSION } from './version.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -29,6 +31,16 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+function notificationTurnId(notification: CodexNotification): string | undefined {
+  const direct = notification.params.turnId;
+  if (typeof direct === 'string' && direct) return direct;
+  const turn = notification.params.turn;
+  if (turn && typeof turn === 'object' && typeof (turn as { id?: unknown }).id === 'string') {
+    return (turn as { id: string }).id;
+  }
+  return undefined;
+}
+
 async function endpointReady(endpoint: string): Promise<boolean> {
   try {
     const url = new URL(endpoint);
@@ -46,6 +58,7 @@ class JsonRpcConnection {
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private notificationListeners = new Set<(notification: CodexNotification) => void>();
+  private closeListeners = new Set<() => void>();
 
   static connect(endpoint: string): Promise<JsonRpcConnection> {
     return new Promise((resolve, reject) => {
@@ -62,6 +75,11 @@ class JsonRpcConnection {
   onNotification(listener: (notification: CodexNotification) => void): () => void {
     this.notificationListeners.add(listener);
     return () => this.notificationListeners.delete(listener);
+  }
+
+  onClose(listener: () => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
 
   request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 90_000): Promise<T> {
@@ -103,11 +121,13 @@ class JsonRpcConnection {
       for (const line of text.split('\n')) this.handleLine(line);
     });
     socket.on('close', () => {
+      this.socket = null;
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timer);
         pending.reject(new Error('Codex App Server socket closed'));
         this.pending.delete(id);
       }
+      for (const listener of this.closeListeners) listener();
     });
   }
 
@@ -164,7 +184,10 @@ interface AppServerListResponse {
 export class CodexAppServer {
   readonly cli = 'codex' as const;
   private process: ChildProcess | null = null;
+  private managedRuntime: CodexRuntimeInfo | undefined;
   private connection: JsonRpcConnection | null = null;
+  private activeTurns = new Set<string>();
+  private deferredRuntimeFingerprint: string | undefined;
   private notificationListeners = new Set<(notification: CodexNotification) => void>();
 
   constructor(private readonly config: AppConfig) {}
@@ -180,14 +203,24 @@ export class CodexAppServer {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        this.connection = await JsonRpcConnection.connect(this.config.codexEndpoint);
-        this.connection.onNotification((notification) => {
+        const connection = await JsonRpcConnection.connect(this.config.codexEndpoint);
+        this.connection = connection;
+        connection.onClose(() => {
+          if (this.connection === connection) {
+            this.connection = null;
+            this.activeTurns.clear();
+          }
+        });
+        connection.onNotification((notification) => {
+          const turnId = notificationTurnId(notification);
+          if (notification.method === 'turn/started' && turnId) this.activeTurns.add(turnId);
+          if (notification.method === 'turn/completed' && turnId) this.activeTurns.delete(turnId);
           for (const listener of this.notificationListeners) listener(notification);
         });
-        await this.connection.request('initialize', {
-          clientInfo: { name: 'wecode', title: 'WeCode Bridge', version: '0.1.0' },
+        await connection.request('initialize', {
+          clientInfo: { name: 'wecode', title: 'WeCode Bridge', version: WECODE_VERSION },
         });
-        this.connection.notify('initialized', {});
+        connection.notify('initialized', {});
         return;
       } catch (error) {
         lastError = error;
@@ -202,9 +235,25 @@ export class CodexAppServer {
   async close(): Promise<void> {
     this.connection?.close();
     this.connection = null;
+    this.activeTurns.clear();
     const managedProcess = this.process;
     this.process = null;
-    if (!managedProcess || managedProcess.killed || managedProcess.exitCode !== null) return;
+    this.managedRuntime = undefined;
+    this.deferredRuntimeFingerprint = undefined;
+    if (!managedProcess) return;
+    await this.terminateManagedProcess(managedProcess);
+  }
+
+  private async terminateManagedProcess(managedProcess: ChildProcess): Promise<void> {
+    if (managedProcess.killed || managedProcess.exitCode !== null) return;
+
+    const exited = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3_000);
+      managedProcess.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
 
     if (process.platform === 'win32' && managedProcess.pid) {
       // spawnCodex uses cmd.exe on Windows. Terminating only that wrapper can
@@ -222,6 +271,7 @@ export class CodexAppServer {
     } else {
       managedProcess.kill('SIGTERM');
     }
+    await exited;
     // The App Server owns persisted threads; only our child process is stopped.
   }
 
@@ -420,6 +470,24 @@ export class CodexAppServer {
   private async ensureProcess(): Promise<void> {
     // A separately managed App Server is valid too. This lets the bridge share
     // one endpoint with other Codex clients without owning their UI process.
+    if (this.process && !this.process.killed && this.process.exitCode === null) {
+      const child = this.process;
+      const currentRuntime = await tryInspectCodexRuntime(this.config.codexCommand);
+      if (currentRuntime && this.managedRuntime && currentRuntime.fingerprint !== this.managedRuntime.fingerprint) {
+        if (this.activeTurns.size) {
+          if (this.deferredRuntimeFingerprint !== currentRuntime.fingerprint) {
+            process.stderr.write('[codex-app-server] Codex CLI changed during an active turn; waiting for it to finish before recycling the managed App Server.\n');
+            this.deferredRuntimeFingerprint = currentRuntime.fingerprint;
+          }
+        } else {
+          process.stderr.write(
+            `[codex-app-server] Codex CLI changed (${this.managedRuntime.version} -> ${currentRuntime.version}); recycling the managed App Server.\n`,
+          );
+          await this.recycleManagedProcess(child);
+        }
+      }
+    }
+
     if (await endpointReady(this.config.codexEndpoint)) return;
 
     if (this.process && !this.process.killed && this.process.exitCode === null) {
@@ -427,7 +495,10 @@ export class CodexAppServer {
       try {
         await this.waitForEndpoint(child);
       } catch (error) {
-        if (this.process === child) this.process = null;
+        if (this.process === child) {
+          this.process = null;
+          this.managedRuntime = undefined;
+        }
         if (!child.killed && child.exitCode === null) child.kill('SIGTERM');
         throw error;
       }
@@ -445,6 +516,7 @@ export class CodexAppServer {
       '-c',
       'service_tier=null',
     ];
+    const runtime = await tryInspectCodexRuntime(this.config.codexCommand);
     const child = spawnCodex(this.config.codexCommand, args, {
       cwd: this.config.homeDir,
       env: { ...process.env },
@@ -457,13 +529,26 @@ export class CodexAppServer {
       if (message) process.stderr.write(`[codex-app-server] ${message}\n`);
     });
     this.process = child;
+    this.managedRuntime = runtime;
     try {
       await this.waitForEndpoint(child, () => startupStderr);
     } catch (error) {
       if (this.process === child) this.process = null;
+      if (this.managedRuntime === runtime) this.managedRuntime = undefined;
       if (!child.killed && child.exitCode === null) child.kill('SIGTERM');
       throw error;
     }
+  }
+
+  private async recycleManagedProcess(child: ChildProcess): Promise<void> {
+    if (this.process !== child) return;
+    this.connection?.close();
+    this.connection = null;
+    this.process = null;
+    this.managedRuntime = undefined;
+    this.deferredRuntimeFingerprint = undefined;
+    this.activeTurns.clear();
+    await this.terminateManagedProcess(child);
   }
 
   private async waitForEndpoint(child: ChildProcess, getStderr: () => string = () => ''): Promise<void> {

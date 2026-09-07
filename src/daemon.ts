@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { AppConfig } from './config.js';
+import { WECODE_VERSION } from './version.js';
 
 const execFile = promisify(execFileCallback);
 const STOP_TIMEOUT_MS = 5_000;
@@ -19,6 +20,7 @@ export interface DaemonStatus {
   owned: boolean;
   pid?: number;
   command?: string;
+  version?: string;
   stale?: boolean;
 }
 
@@ -50,14 +52,24 @@ export async function inspectDaemon(config: AppConfig): Promise<DaemonStatus> {
 
   const command = await processCommand(record.pid);
   const owned = Boolean(command && isWecodeCommand(command));
-  return { running: true, owned, pid: record.pid, ...(command ? { command } : {}) };
+  return {
+    running: true,
+    owned,
+    pid: record.pid,
+    ...(command ? { command } : {}),
+    ...(record.version ? { version: record.version } : {}),
+  };
 }
 
 export async function startDaemon(config: AppConfig): Promise<StartResult> {
   const current = await inspectDaemon(config);
   if (current.running) {
     if (!current.owned) throw new Error(`PID ${current.pid} 正在运行，但无法确认它属于 wecode；已停止启动以避免误杀其他进程。`);
-    return { started: false, pid: current.pid as number };
+    if (!current.version || current.version !== WECODE_VERSION) {
+      await stopDaemon(config);
+    } else {
+      return { started: false, pid: current.pid as number };
+    }
   }
   if (current.pid) await rm(daemonPaths(config).pidFile, { force: true });
 
@@ -86,7 +98,7 @@ export async function startDaemon(config: AppConfig): Promise<StartResult> {
 export async function acquireDaemon(config: AppConfig): Promise<void> {
   const paths = daemonPaths(config);
   await mkdir(config.dataDir, { recursive: true });
-  const record = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`;
+  const record = `${JSON.stringify({ pid: process.pid, version: WECODE_VERSION, startedAt: new Date().toISOString() })}\n`;
   try {
     await writeFile(paths.pidFile, record, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return;
@@ -147,10 +159,12 @@ export async function readDaemonLogs(config: AppConfig): Promise<string> {
   }
 }
 
-async function readPidRecord(file: string): Promise<{ pid: number } | null> {
+async function readPidRecord(file: string): Promise<{ pid: number; version?: string } | null> {
   try {
-    const value = JSON.parse(await readFile(file, 'utf8')) as { pid?: unknown };
-    return typeof value.pid === 'number' && Number.isInteger(value.pid) && value.pid > 0 ? { pid: value.pid } : null;
+    const value = JSON.parse(await readFile(file, 'utf8')) as { pid?: unknown; version?: unknown };
+    return typeof value.pid === 'number' && Number.isInteger(value.pid) && value.pid > 0
+      ? { pid: value.pid, ...(typeof value.version === 'string' ? { version: value.version } : {}) }
+      : null;
   } catch {
     return null;
   }
