@@ -237,6 +237,8 @@ Quick Tunnel 适合临时阅读和开发测试，不是正式网站服务。链�
 
 `codexEndpoint`、`sharePageBaseUrl`、超时和协议地址都不是普通用户配置项，保持默认即可。
 
+wecode 默认请求 Codex 生成 `detailed` reasoning summary，并将其以“思路摘要”发送到微信；这不是原始隐藏 CoT。需要调整时可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
+
 ## 故障排查
 
 - `wecode` 无法识别：源码目录执行 `npm link`；如果刚安装了 Node.js 或 cloudflared，重新打开 PowerShell，再执行 `wecode restart`。

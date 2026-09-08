@@ -3,6 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+export type ReasoningSummary = 'auto' | 'concise' | 'detailed' | 'none';
+
 export interface UserConfig {
   version?: number;
   dataDir?: string;
@@ -13,6 +15,7 @@ export interface UserConfig {
   codexCommand?: string;
   codexModel?: string;
   codexReasoningEffort?: string;
+  codexReasoningSummary?: string;
   codexFast?: boolean;
   controlModel?: string;
   controlReasoningEffort?: string;
@@ -35,6 +38,7 @@ export interface AppConfig {
   codexCommand: string;
   codexModel: string;
   codexReasoningEffort: string;
+  codexReasoningSummary: ReasoningSummary;
   codexFast: boolean;
   controlModel: string;
   controlReasoningEffort: string;
@@ -95,6 +99,7 @@ export function loadConfig(
   ].find((candidate) => existsSync(candidate));
   const codexModel = firstText(userConfig.codexModel, env.CODEX_MODEL) || '';
   const codexReasoningEffort = firstText(userConfig.codexReasoningEffort, env.CODEX_REASONING_EFFORT) || '';
+  const codexReasoningSummary = reasoningSummaryValue(firstText(userConfig.codexReasoningSummary, env.CODEX_REASONING_SUMMARY));
 
   return {
     configFile,
@@ -110,6 +115,7 @@ export function loadConfig(
     codexCommand: firstText(userConfig.codexCommand, env.CODEX_COMMAND) || 'codex',
     codexModel,
     codexReasoningEffort,
+    codexReasoningSummary,
     codexFast: booleanValue(env.CODEX_FAST, userConfig.codexFast, false),
     controlModel: firstText(userConfig.controlModel, env.CONTROL_MODEL, codexModel) || '',
     controlReasoningEffort: firstText(userConfig.controlReasoningEffort, env.CONTROL_REASONING_EFFORT, codexReasoningEffort) || '',
@@ -172,4 +178,9 @@ function booleanValue(raw: string | undefined, configured: boolean | undefined, 
   if (['1', 'true', 'yes', 'on'].includes(value)) return true;
   if (['0', 'false', 'no', 'off'].includes(value)) return false;
   return fallback;
+}
+
+function reasoningSummaryValue(value: string | undefined): ReasoningSummary {
+  if (value === 'auto' || value === 'concise' || value === 'detailed' || value === 'none') return value;
+  return 'detailed';
 }

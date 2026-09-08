@@ -18,6 +18,7 @@ test('resolves machine-specific paths and model settings from the supplied envir
     WECHATBOT_DEFAULT_CWD: 'projects/demo',
     CODEX_MODEL: 'portable-model',
     CODEX_REASONING_EFFORT: 'high',
+    CODEX_REASONING_SUMMARY: 'concise',
     CONTROL_MODEL: 'control-model',
     CONTROL_REASONING_EFFORT: 'medium',
   }, projectRoot, { configFile: path.join(projectRoot, '.config-test-missing.json') });
@@ -28,6 +29,7 @@ test('resolves machine-specific paths and model settings from the supplied envir
   assert.equal(config.defaultCwd, path.join(projectRoot, 'projects/demo'));
   assert.equal(config.codexModel, 'portable-model');
   assert.equal(config.codexReasoningEffort, 'high');
+  assert.equal(config.codexReasoningSummary, 'concise');
   assert.equal(config.controlModel, 'control-model');
   assert.equal(config.controlReasoningEffort, 'medium');
 });
@@ -38,6 +40,7 @@ test('uses the repository directory as the portable discovery default', () => {
 
   assert.deepEqual(config.searchRoots, [projectRoot]);
   assert.equal(config.defaultCwd, projectRoot);
+  assert.equal(config.codexReasoningSummary, 'detailed');
 });
 
 test('reads the small user config file without requiring environment variables', async () => {

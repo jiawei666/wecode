@@ -282,6 +282,7 @@ export class CodexAppServer {
     const fast = options.fast ?? this.config.codexFast;
     const threadConfig: Record<string, unknown> = {
       service_tier: fast ? 'fast' : null,
+      model_reasoning_summary: this.config.codexReasoningSummary,
     };
     if (reasoningEffort) threadConfig.model_reasoning_effort = reasoningEffort;
     const params: Record<string, unknown> = {
@@ -312,6 +313,7 @@ export class CodexAppServer {
       threadId,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
+      config: { model_reasoning_summary: this.config.codexReasoningSummary },
     });
     if (!result.thread?.id) throw new Error(`Codex thread not found: ${threadId}`);
     return { ...result.thread, cli: 'codex' };
@@ -324,6 +326,7 @@ export class CodexAppServer {
     const fast = options.fast ?? this.config.codexFast;
     const threadConfig: Record<string, unknown> = {
       service_tier: fast ? 'fast' : null,
+      model_reasoning_summary: this.config.codexReasoningSummary,
     };
     if (reasoningEffort) threadConfig.model_reasoning_effort = reasoningEffort;
     const params: Record<string, unknown> = {
@@ -433,6 +436,7 @@ export class CodexAppServer {
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
       serviceTier: fast ? 'fast' : null,
+      summary: this.config.codexReasoningSummary,
     };
     if (options.model || this.config.codexModel) params.model = options.model || this.config.codexModel;
     if (options.reasoningEffort || this.config.codexReasoningEffort) params.effort = options.reasoningEffort || this.config.codexReasoningEffort;
