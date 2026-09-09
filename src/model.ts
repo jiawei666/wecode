@@ -19,6 +19,24 @@ export interface SessionBinding extends SessionLaunchOptions {
   lastActivityAt: number;
 }
 
+export type ReplySource = 'bridge' | 'control' | 'codex';
+
+export interface ReplyOptions {
+  title?: string;
+  presentation?: PresentationMode;
+  kind?: TurnResult['kind'];
+  cwd?: string;
+  source?: ReplySource;
+}
+
+export interface PendingReply {
+  text: string;
+  options: ReplyOptions;
+  attempts: number;
+  /** True when iLink rejected the context and a new inbound token is required. */
+  waitForFreshContext?: boolean;
+}
+
 export interface ControlState {
   sessionId?: string;
   startedAt: number;
@@ -46,6 +64,7 @@ export interface BotState {
   controls: Record<string, ControlState>;
   bindingHistory: Record<string, SessionBinding[]>;
   sessionNotes: Record<string, string>;
+  pendingReplies: Record<string, PendingReply[]>;
   dedup: string[];
   lastPollAt: number;
   lastError: string;
@@ -88,7 +107,7 @@ export interface TurnResult {
   error?: string;
 }
 
-/** User-visible progress emitted from Codex's safe reasoning summary/preamble events. */
+/** Progress emitted from Codex's reasoning summary or user-facing commentary events. */
 export interface TurnProgress {
   threadId: string;
   turnId: string;

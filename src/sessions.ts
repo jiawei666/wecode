@@ -318,19 +318,7 @@ export class SessionManager {
 
     const progress = progressFromNotification(notification);
     if (progress) {
-      const update: TurnProgress = {
-        threadId: active.threadId,
-        turnId: active.turnId,
-        kind: progress.kind,
-        text: progress.text,
-      };
-      const previous = this.progressDeliveries.get(active.turnId) ?? Promise.resolve();
-      const delivery = previous
-        .then(() => this.onProgress(update))
-        .catch((error) => {
-          process.stderr.write(`[session] progress delivery failed: ${errorText(error)}\n`);
-        });
-      this.progressDeliveries.set(active.turnId, delivery);
+      this.deliverProgress(active, progress.kind, progress.text);
       return;
     }
 
@@ -343,7 +331,17 @@ export class SessionManager {
     if (notification.method === 'item/completed') {
       const item = asRecord(params.item);
       const type = stringValue(item?.type);
-      if (type === 'agentMessage') active.finalText = stringValue(item?.text) || active.finalText;
+      if (type === 'agentMessage') {
+        const itemId = stringValue(item?.id) || stringValue(params.itemId) || 'agent-message';
+        const text = stringValue(item?.text) || active.textByItem.get(itemId) || '';
+        const phase = stringValue(item?.phase)?.toLowerCase();
+        if (phase === 'commentary') {
+          active.textByItem.delete(itemId);
+          if (text) this.deliverProgress(active, 'preamble', text);
+        } else {
+          active.finalText = text || active.finalText;
+        }
+      }
       if (type === 'plan') active.kind = 'plan';
       if (type === 'fileChange') active.kind = 'diff';
       return;
@@ -380,6 +378,22 @@ export class SessionManager {
         .then(() => this.onTurn(result))
         .catch((error) => process.stderr.write(`[session] turn delivery failed: ${String(error)}\n`));
     }
+  }
+
+  private deliverProgress(active: TurnAccumulator, kind: TurnProgress['kind'], text: string): void {
+    const update: TurnProgress = {
+      threadId: active.threadId,
+      turnId: active.turnId,
+      kind,
+      text,
+    };
+    const previous = this.progressDeliveries.get(active.turnId) ?? Promise.resolve();
+    const delivery = previous
+      .then(() => this.onProgress(update))
+      .catch((error) => {
+        process.stderr.write(`[session] progress delivery failed: ${errorText(error)}\n`);
+      });
+    this.progressDeliveries.set(active.turnId, delivery);
   }
 
   private touchThread(threadId: string): void {

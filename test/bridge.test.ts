@@ -730,3 +730,161 @@ test('handles an idle external client that still holds the session lock', async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('sends spoken Codex progress without a label and then the final response', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-final-response-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const binding: SessionBinding = {
+    threadId: 'final-response-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  store.setBinding('user', binding);
+  store.update((state) => {
+    state.contextTokens.user = 'context-token';
+  });
+  const sent: string[] = [];
+  const fakeSessions = { status: async () => ({ binding, running: false }), close: async () => undefined } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+
+  try {
+    await bridge.onTurnProgress({
+      threadId: binding.threadId,
+      turnId: 'turn-1',
+      kind: 'reasoning',
+      text: 'Preparing to analyze collections code',
+    });
+    const progressText = '我先查看两张截图，确认问题具体混在了哪里。';
+    await bridge.onTurnProgress({
+      threadId: binding.threadId,
+      turnId: 'turn-1',
+      kind: 'preamble',
+      text: progressText,
+    });
+    await bridge.onTurn({
+      threadId: binding.threadId,
+      turnId: 'turn-1',
+      text: '这是最终返回给用户的内容。',
+      status: 'completed',
+    });
+
+    assert.deepEqual(sent, [progressText, '这是最终返回给用户的内容。']);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('keeps a failed final response and retries it after a new context token arrives', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-retry-final-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const binding: SessionBinding = {
+    threadId: 'retry-final-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  store.setBinding('user', binding);
+  const sent: string[] = [];
+  let acceptingReplies = false;
+  const fakeSessions = {
+    status: async () => ({ binding, running: false }),
+    send: async () => ({ accepted: true }),
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = {
+    sendText: async (_to: string, text: string) => {
+      if (!acceptingReplies) return { ok: false, errmsg: 'prepare failed' };
+      sent.push(text);
+      return { ok: true };
+    },
+  } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+
+  try {
+    await bridge.onTurn({
+      threadId: binding.threadId,
+      turnId: 'turn-1',
+      text: '任务已完成，这是不能丢失的最终结果。',
+      status: 'completed',
+    });
+    assert.deepEqual(sent, []);
+
+    acceptingReplies = true;
+    await bridge.handle(message('？', 'retry-final-1'));
+
+    assert.equal(sent[0], '任务已完成，这是不能丢失的最终结果。');
+    assert.match(sent.at(-1) || '', /已发送，执行中/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('keeps a failed final response across a bridge restart', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-persist-final-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const binding: SessionBinding = {
+    threadId: 'persist-final-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  store.setBinding('user', binding);
+  store.update((state) => {
+    state.contextTokens.user = 'expired-context';
+  });
+  const sent: string[] = [];
+  const fakeSessions = {
+    status: async () => ({ binding, running: false }),
+    send: async () => ({ accepted: true }),
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = {
+    sendText: async (_to: string, text: string, contextToken: string) => {
+      if (contextToken !== 'fresh-context') return { ok: false, errmsg: 'prepare failed', needsFreshContext: true };
+      sent.push(text);
+      return { ok: true };
+    },
+  } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const firstBridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+
+  try {
+    await firstBridge.onTurn({
+      threadId: binding.threadId,
+      turnId: 'turn-persist-final',
+      text: '重启后也不能丢失的最终结果。',
+      status: 'completed',
+    });
+    await firstBridge.close();
+
+    const reloadedStore = new StateStore(path.join(directory, 'state.json'));
+    await reloadedStore.init();
+    const secondBridge = new BridgeApp(config, reloadedStore, fakeIlink, fakeSessions);
+    try {
+      await secondBridge.handle({
+        ...message('？', 'persist-final-1'),
+        contextToken: 'fresh-context',
+      });
+      assert.equal(sent[0], '重启后也不能丢失的最终结果。');
+    } finally {
+      await secondBridge.close();
+    }
+  } finally {
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

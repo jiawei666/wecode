@@ -7,6 +7,9 @@ import type {
   ControlState,
   PendingTakeover,
   PresentationMode,
+  PendingReply,
+  ReplyOptions,
+  ReplySource,
   SessionBinding,
   SessionLaunchOptions,
   TurnProgress,
@@ -17,18 +20,16 @@ import { formatModel, formatTimestamp } from './session-display.js';
 import { SessionManager, SessionOccupiedError } from './sessions.js';
 import { StateStore } from './state.js';
 
-type ReplySource = 'bridge' | 'control' | 'codex';
-
 interface TurnProgressBuffer {
   userId: string;
-  kind: TurnProgress['kind'];
   text: string;
   timer?: NodeJS.Timeout;
   flushing?: Promise<unknown>;
 }
 
-const TURN_PROGRESS_FLUSH_DELAY_MS = 1_200;
-const TURN_PROGRESS_FLUSH_LENGTH = 240;
+const PENDING_REPLY_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000] as const;
+const TURN_PROGRESS_FLUSH_DELAY_MS = 3_000;
+const TURN_PROGRESS_FLUSH_LENGTH = 900;
 
 export class BridgeApp {
   private readonly controlAgent: ControlAgent;
@@ -38,7 +39,14 @@ export class BridgeApp {
   private readonly draining = new Set<string>();
   private readonly handling = new Map<string, Promise<void>>();
   private readonly directHandling = new Map<string, Promise<void>>();
+  private readonly pendingReplies = new Map<string, PendingReply[]>();
+  private readonly pendingReplyTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingReplyFlushes = new Map<string, Promise<boolean>>();
+  private readonly pendingReplyRefreshes = new Set<string>();
+  private readonly awaitingFreshContext = new Set<string>();
+  private readonly finalReplyChains = new Map<string, Promise<void>>();
   private readonly turnProgress = new Map<string, TurnProgressBuffer>();
+  private readonly progressReplyChains = new Map<string, Promise<void>>();
 
   constructor(
     private readonly config: AppConfig,
@@ -50,6 +58,13 @@ export class BridgeApp {
     this.controlAgent = controlAgent ?? new ControlAgent(config);
     this.pages = new PagePublisher(config);
     this.sessions = sessions;
+    for (const [userId, replies] of Object.entries(this.store.get().pendingReplies)) {
+      const queue = replies.map((reply) => ({ ...reply, options: { ...reply.options } }));
+      if (!queue.length) continue;
+      this.pendingReplies.set(userId, queue);
+      if (queue.some((reply) => reply.waitForFreshContext)) this.awaitingFreshContext.add(userId);
+      else this.schedulePendingReplyRetry(userId, queue[0]?.attempts ?? 0);
+    }
   }
 
   async close(): Promise<void> {
@@ -57,9 +72,12 @@ export class BridgeApp {
       if (progress.timer) clearTimeout(progress.timer);
     }
     this.turnProgress.clear();
+    for (const timer of this.pendingReplyTimers.values()) clearTimeout(timer);
+    this.pendingReplyTimers.clear();
     await this.controlAgent.close();
     await this.pages.close();
     await this.sessions.close();
+    await this.store.save();
   }
 
   async handle(message: InboundMessage): Promise<void> {
@@ -110,7 +128,9 @@ export class BridgeApp {
       this.store.update((state) => {
         state.contextTokens[userId] = message.contextToken;
       });
+      this.awaitingFreshContext.delete(userId);
     }
+    await this.flushPendingReplies(userId, Boolean(message.contextToken));
     if (this.store.seen(`${userId}|${message.messageId}|${message.timeMs}`)) return;
 
     const text = message.text.trim();
@@ -423,33 +443,37 @@ export class BridgeApp {
       const progressKey = turnProgressKey(result.threadId, result.turnId);
       await this.flushTurnProgress(progressKey);
       this.turnProgress.delete(progressKey);
-      if (result.status === 'interrupted') await this.reply(userId, '任务已中断。');
-      else if (result.status === 'failed') await this.reply(userId, `Codex 执行失败：${result.error || result.text || '未知错误'}`);
-      else if (result.text.trim()) await this.reply(userId, result.text, {
-        kind: result.kind,
-        presentation: result.presentation,
-        cwd: binding.cwd,
-        source: 'codex',
-      });
-      else await this.reply(userId, '已完成，无可展示内容。');
-      await this.flushQueuedTurn(userId);
+      const progressChain = this.progressReplyChains.get(userId);
+      if (progressChain) await progressChain;
+      let delivered = false;
+      if (result.status === 'interrupted') delivered = await this.deliverFinalReply(userId, '任务已中断。');
+      else if (result.status === 'failed') {
+        delivered = await this.deliverFinalReply(userId, `Codex 执行失败：${result.error || result.text || '未知错误'}`);
+      } else if (result.text.trim()) {
+        delivered = await this.deliverFinalReply(userId, result.text, {
+          kind: result.kind,
+          presentation: result.presentation,
+          cwd: binding.cwd,
+          source: 'codex',
+        });
+      } else delivered = await this.deliverFinalReply(userId, '已完成，无可展示内容。');
+      if (delivered) await this.flushQueuedTurn(userId);
     } finally {
       this.draining.delete(userId);
     }
   }
 
   async onTurnProgress(progress: TurnProgress): Promise<void> {
+    if (progress.kind !== 'preamble') return;
     const entry = Object.entries(this.store.get().bindings).find(([, binding]) => binding.threadId === progress.threadId);
     if (!entry || !progress.text.trim()) return;
     const [userId] = entry;
     const key = turnProgressKey(progress.threadId, progress.turnId);
     let buffer = this.turnProgress.get(key);
     if (!buffer) {
-      buffer = { userId, kind: progress.kind, text: '' };
+      buffer = { userId, text: '' };
       this.turnProgress.set(key, buffer);
     }
-    if (buffer.kind !== progress.kind && buffer.text.trim()) await this.flushTurnProgress(key);
-    buffer.kind = progress.kind;
     buffer.text += progress.text;
     if (buffer.text.length >= TURN_PROGRESS_FLUSH_LENGTH) {
       await this.flushTurnProgress(key);
@@ -480,8 +504,7 @@ export class BridgeApp {
     const text = buffer.text.trim();
     if (!text) return;
     buffer.text = '';
-    const label = buffer.kind === 'reasoning' ? '思路摘要' : '处理提示';
-    const sending = this.reply(buffer.userId, `${label}：${text}`, { source: 'codex' });
+    const sending = this.progressReply(buffer.userId, text);
     buffer.flushing = sending;
     try {
       await sending;
@@ -489,6 +512,109 @@ export class BridgeApp {
       if (buffer.flushing === sending) buffer.flushing = undefined;
     }
     if (buffer.text.trim()) await this.flushTurnProgress(key);
+  }
+
+  private async progressReply(userId: string, text: string): Promise<boolean> {
+    const previous = this.progressReplyChains.get(userId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(() => this.reply(userId, text, { source: 'codex' }));
+    const settled = task.then(() => undefined, () => undefined);
+    this.progressReplyChains.set(userId, settled);
+    try {
+      return await task;
+    } finally {
+      if (this.progressReplyChains.get(userId) === settled) this.progressReplyChains.delete(userId);
+    }
+  }
+
+  private async deliverFinalReply(userId: string, text: string, options: ReplyOptions = {}): Promise<boolean> {
+    if (this.pendingReplies.get(userId)?.length) {
+      this.enqueuePendingReply(userId, text, options);
+      return false;
+    }
+    const sent = await this.finalReply(userId, text, options);
+    if (sent) return true;
+    this.enqueuePendingReply(userId, text, options);
+    process.stderr.write('[wechat] final response queued for retry\n');
+    return false;
+  }
+
+  private enqueuePendingReply(userId: string, text: string, options: ReplyOptions): void {
+    const queue = this.pendingReplies.get(userId) ?? [];
+    const waitForFreshContext = this.awaitingFreshContext.has(userId);
+    queue.push({ text, options, attempts: 0, ...(waitForFreshContext ? { waitForFreshContext: true } : {}) });
+    this.pendingReplies.set(userId, queue);
+    this.persistPendingReplies();
+    if (!waitForFreshContext) this.schedulePendingReplyRetry(userId, 0);
+  }
+
+  private async flushPendingReplies(userId: string, resetAttempts = false): Promise<boolean> {
+    if (resetAttempts) this.pendingReplyRefreshes.add(userId);
+    const previous = this.pendingReplyFlushes.get(userId);
+    if (previous) return previous;
+    const task = (async () => {
+      let result = true;
+      while (true) {
+        result = await this.flushPendingRepliesInternal(userId, this.pendingReplyRefreshes.delete(userId));
+        if (!this.pendingReplyRefreshes.has(userId)) return result;
+      }
+    })();
+    this.pendingReplyFlushes.set(userId, task);
+    try {
+      return await task;
+    } finally {
+      if (this.pendingReplyFlushes.get(userId) === task) this.pendingReplyFlushes.delete(userId);
+    }
+  }
+
+  private async flushPendingRepliesInternal(userId: string, resetAttempts: boolean): Promise<boolean> {
+    const queue = this.pendingReplies.get(userId);
+    if (!queue?.length) return true;
+    if (resetAttempts) {
+      this.awaitingFreshContext.delete(userId);
+      for (const pending of queue) pending.attempts = 0;
+      for (const pending of queue) delete pending.waitForFreshContext;
+    }
+    const timer = this.pendingReplyTimers.get(userId);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingReplyTimers.delete(userId);
+    }
+    while (queue.length) {
+      const pending = queue[0];
+      if (!pending) break;
+      if (await this.finalReply(userId, pending.text, pending.options)) {
+        queue.shift();
+        this.persistPendingReplies();
+        continue;
+      }
+      pending.attempts += 1;
+      pending.waitForFreshContext = this.awaitingFreshContext.has(userId);
+      this.persistPendingReplies();
+      if (!pending.waitForFreshContext) this.schedulePendingReplyRetry(userId, pending.attempts);
+      return false;
+    }
+    this.pendingReplies.delete(userId);
+    this.persistPendingReplies();
+    if (this.queued.get(userId)?.length && !this.draining.has(userId)) {
+      void this.drainQueue(userId).catch((error) => {
+        process.stderr.write(`[bridge] queued turn failed: ${errorMessage(error)}\n`);
+      });
+    }
+    return true;
+  }
+
+  private schedulePendingReplyRetry(userId: string, attempts: number): void {
+    if (this.awaitingFreshContext.has(userId)) return;
+    if (this.pendingReplyTimers.has(userId)) return;
+    const delayIndex = Math.min(attempts, PENDING_REPLY_RETRY_DELAYS_MS.length - 1);
+    const timer = setTimeout(() => {
+      this.pendingReplyTimers.delete(userId);
+      void this.flushPendingReplies(userId).catch((error) => {
+        process.stderr.write(`[wechat] pending final response retry failed: ${errorMessage(error)}\n`);
+      });
+    }, PENDING_REPLY_RETRY_DELAYS_MS[delayIndex]);
+    timer.unref();
+    this.pendingReplyTimers.set(userId, timer);
   }
 
   private async drainQueue(userId: string): Promise<void> {
@@ -747,19 +873,62 @@ export class BridgeApp {
   private async reply(
     userId: string,
     text: string,
-    options: { title?: string; presentation?: PresentationMode; kind?: TurnResult['kind']; cwd?: string; source?: ReplySource } = {},
+    options: ReplyOptions = {},
   ): Promise<boolean> {
+    try {
+      return await this.sendReply(userId, text, options);
+    } catch (error) {
+      process.stderr.write(`[wechat] reply failed: ${errorMessage(error)}\n`);
+      return false;
+    }
+  }
+
+  private async finalReply(userId: string, text: string, options: ReplyOptions = {}): Promise<boolean> {
+    const previous = this.finalReplyChains.get(userId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(() => this.sendReply(userId, text, options));
+    const settled = task.then(() => undefined, () => undefined);
+    this.finalReplyChains.set(userId, settled);
+    try {
+      return await task;
+    } catch (error) {
+      process.stderr.write(`[wechat] reply failed: ${errorMessage(error)}\n`);
+      return false;
+    } finally {
+      if (this.finalReplyChains.get(userId) === settled) this.finalReplyChains.delete(userId);
+    }
+  }
+
+  private async sendReply(userId: string, text: string, options: ReplyOptions): Promise<boolean> {
     const contextToken = this.store.get().contextTokens[userId] ?? '';
-    if (!contextToken) return false;
+    if (!contextToken) {
+      this.awaitingFreshContext.add(userId);
+      return false;
+    }
     const { source = 'bridge', ...renderOptions } = options;
     const rendered = await renderResponse({ text: decorateReply(text, source), ...renderOptions }, this.pages);
     const payload = rendered.mode === 'page' ? rendered.fallback : rendered.text;
     const result = await this.ilink.sendText(userId, payload, contextToken, this.config.chatChunkSize);
     if (!result.ok) {
-      process.stderr.write(`[wechat] send failed: ${result.errmsg || result.raw || 'unknown'}\n`);
+      const needsFreshContext = result.needsFreshContext
+        || result.code === -2
+        || /prepare failed/i.test(result.errmsg || '');
+      const contextWasRefreshed = this.store.get().contextTokens[userId] !== contextToken;
+      if (needsFreshContext && !contextWasRefreshed) this.awaitingFreshContext.add(userId);
+      const code = result.code === undefined ? '' : `ret=${result.code} `;
+      const waiting = needsFreshContext && !contextWasRefreshed ? '；等待用户下一条消息刷新 context_token' : '';
+      process.stderr.write(`[wechat] send failed: ${code}${result.errmsg || result.raw || 'unknown'}${waiting}\n`);
       return false;
     }
+    this.awaitingFreshContext.delete(userId);
     return true;
+  }
+
+  private persistPendingReplies(): void {
+    this.store.update((state) => {
+      state.pendingReplies = Object.fromEntries(
+        [...this.pendingReplies.entries()].filter(([, replies]) => replies.length),
+      );
+    });
   }
 }
 

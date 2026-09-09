@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { BotState, ControlState, SessionBinding } from './model.js';
+import type { BotState, ControlState, PendingReply, ReplyOptions, SessionBinding } from './model.js';
 
 const KEEP_DEDUP = 500;
 
@@ -18,6 +18,7 @@ function emptyState(): BotState {
     controls: {},
     bindingHistory: {},
     sessionNotes: {},
+    pendingReplies: {},
     dedup: [],
     lastPollAt: 0,
     lastError: '',
@@ -59,6 +60,7 @@ export class StateStore {
           Object.entries(loaded.bindingHistory ?? {}).map(([userId, history]) => [userId, history.map(normalizeBinding)]),
         ),
         sessionNotes: loaded.sessionNotes ?? {},
+        pendingReplies: normalizePendingReplies(loaded.pendingReplies),
         dedup: loaded.dedup ?? [],
       };
     } catch (error) {
@@ -165,6 +167,40 @@ type StoredState = Partial<BotState> & {
   menuStates?: unknown;
   onboardingShown?: unknown;
 };
+
+function normalizePendingReplies(value: unknown): Record<string, PendingReply[]> {
+  if (!value || typeof value !== 'object') return {};
+  const result: Record<string, PendingReply[]> = {};
+  for (const [userId, rawReplies] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(rawReplies)) continue;
+    const replies = rawReplies.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object') return [];
+      const candidate = raw as Record<string, unknown>;
+      if (typeof candidate.text !== 'string' || !candidate.text.trim()) return [];
+      const rawOptions = candidate.options && typeof candidate.options === 'object'
+        ? candidate.options as Record<string, unknown>
+        : {};
+      const options: ReplyOptions = {
+        ...(typeof rawOptions.title === 'string' ? { title: rawOptions.title } : {}),
+        ...(['chat', 'page'].includes(String(rawOptions.presentation)) ? { presentation: rawOptions.presentation as ReplyOptions['presentation'] } : {}),
+        ...(['plain', 'plan', 'diff', 'report', 'code'].includes(String(rawOptions.kind)) ? { kind: rawOptions.kind as ReplyOptions['kind'] } : {}),
+        ...(typeof rawOptions.cwd === 'string' ? { cwd: rawOptions.cwd } : {}),
+        ...(['bridge', 'control', 'codex'].includes(String(rawOptions.source)) ? { source: rawOptions.source as ReplyOptions['source'] } : {}),
+      };
+      const attempts = typeof candidate.attempts === 'number' && Number.isInteger(candidate.attempts) && candidate.attempts >= 0
+        ? candidate.attempts
+        : 0;
+      return [{
+        text: candidate.text,
+        options,
+        attempts,
+        ...(candidate.waitForFreshContext === true ? { waitForFreshContext: true } : {}),
+      }];
+    });
+    if (replies.length) result[userId] = replies;
+  }
+  return result;
+}
 
 function normalizeBinding(binding: SessionBinding): SessionBinding {
   return {

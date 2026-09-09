@@ -147,7 +147,7 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 
 维护模式已经使用 wecode 为控制 Agent 配置的本机终端权限。它不会因为进入维护模式主动重建会话管理 Agent；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。
 
-Codex 的 reasoning summary 和 preamble 会以合并后的“思路摘要/处理提示”发送；这是模型提供给用户的安全摘要，不是隐藏的完整思维链，也不会转发工具调用原文。
+Codex 的用户可见 commentary/preamble（例如“我先查看两张截图……”）会合并后发送到微信，不添加“思路摘要”或“处理提示”前缀；内部 reasoning summary 不转发，任务完成后的最终回复会单独发送。需要调整 Codex 生成的摘要级别时，可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
 发送“分叉”或“复制会话”会通过 Codex App Server 复制当前会话的已保存历史，创建并绑定一个新会话；原会话不会被关闭。Windows Codex Desktop 占用会话时，确认接管失败也会自动使用这个方式，不会强制结束 Desktop。正在生成中的未完成回复不会复制。
 新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出`、`帮助` 可以直接使用。
@@ -237,7 +237,7 @@ Quick Tunnel 适合临时阅读和开发测试，不是正式网站服务。链�
 
 `codexEndpoint`、`sharePageBaseUrl`、超时和协议地址都不是普通用户配置项，保持默认即可。
 
-wecode 默认请求 Codex 生成 `detailed` reasoning summary，并将其以“思路摘要”发送到微信；这不是原始隐藏 CoT。需要调整时可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
+wecode 默认请求 Codex 生成 `detailed` reasoning summary；其中用户可见的 commentary/preamble 会发送到微信，内部 reasoning summary 不发送，也不额外添加“思路摘要”前缀；任务完成后再发送最终回复。需要调整时可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
 ## 故障排查
 
@@ -246,6 +246,7 @@ wecode 默认请求 Codex 生成 `detailed` reasoning summary，并将其以“�
 - 不需要 `/sessions`、`/use` 或序号切换：直接发送 `状态`、`停止`、`分叉`、`退出`、`帮助`，会话选择用自然语言描述。
 - `node:events ... Unhandled 'error' event`：通常是子进程命令不存在；重新运行 Windows 一键安装脚本，确认 `codex --version` 和 `cloudflared --version` 后再执行 `wecode restart`。
 - 后台启动后没有响应：执行 `wecode status` 和 `wecode logs` 查看进程与错误日志。
+- 微信发送日志出现 `prepare failed`：通常是长任务结束时使用的 `context_token` 已过期，不等同于发送频率过高；wecode 会保留未送达的最终结果，收到下一条消息刷新 token 后优先发送。
 - 分享页提示未安装 `cloudflared`：执行 `cloudflared --version`；如果命令不在 `PATH`，在配置文件中填写绝对路径。
 - `reasoning_effort must not be empty`：wecode 不会向 Codex 发送空的 `model_reasoning_effort`；如果仍出现，执行 `wecode restart` 后查看最新日志。
 - `timeout waiting for child process to exit`：这是 Codex App Server 刷新模型列表的外部警告；不影响已能使用的会话，先执行 `wecode restart`，持续出现时升级 Codex CLI。

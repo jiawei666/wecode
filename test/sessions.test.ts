@@ -145,6 +145,80 @@ test('forwards Codex reasoning summaries before the final turn result', async ()
   }
 });
 
+test('forwards commentary agent messages while keeping them out of the final result', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-commentary-'));
+  let listener: ((notification: CodexNotification) => void) | undefined;
+  const progress: string[] = [];
+  const results: string[] = [];
+  const fakeAppServer = {
+    onNotification: (callback: (notification: CodexNotification) => void) => {
+      listener = callback;
+      return () => undefined;
+    },
+    startThread: async () => ({ id: 'commentary-thread', cwd: directory }),
+    startTurn: async () => {
+      listener?.({
+        method: 'item/agentMessage/delta',
+        params: { turnId: 'commentary-turn', itemId: 'commentary-item', delta: '我先查看两张截图，确认问题具体混在了哪里。' },
+      });
+      listener?.({
+        method: 'item/completed',
+        params: {
+          turnId: 'commentary-turn',
+          item: {
+            type: 'agentMessage',
+            id: 'commentary-item',
+            text: '我先查看两张截图，确认问题具体混在了哪里。',
+            phase: 'commentary',
+          },
+        },
+      });
+      listener?.({
+        method: 'item/agentMessage/delta',
+        params: { turnId: 'commentary-turn', itemId: 'final-item', delta: '最终答案' },
+      });
+      listener?.({
+        method: 'item/completed',
+        params: {
+          turnId: 'commentary-turn',
+          item: { type: 'agentMessage', id: 'final-item', text: '最终答案', phase: 'final_answer' },
+        },
+      });
+      listener?.({
+        method: 'turn/completed',
+        params: { turnId: 'commentary-turn', turn: { id: 'commentary-turn', status: 'completed' } },
+      });
+      return 'commentary-turn';
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const manager = new SessionManager(
+    loadConfig(),
+    store,
+    fakeAppServer,
+    async (result) => {
+      results.push(result.text);
+    },
+    async (update) => {
+      progress.push(`${update.kind}:${update.text}`);
+    },
+  );
+
+  try {
+    await manager.create('user', directory);
+    await manager.send('user', '处理截图');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(progress, ['preamble:我先查看两张截图，确认问题具体混在了哪里。']);
+    assert.deepEqual(results, ['最终答案']);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('steers the active turn through the App Server', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-steer-'));
   const events: string[] = [];

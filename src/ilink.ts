@@ -56,8 +56,10 @@ export interface PollResult {
 
 export interface SendResult {
   ok: boolean;
+  code?: number;
   errmsg?: string;
   raw?: string;
+  needsFreshContext?: boolean;
 }
 
 const MSG_TYPE_USER = 1;
@@ -221,7 +223,13 @@ export class IlinkClient {
   }
 
   async sendText(to: string, text: string, contextToken: string, chunkSize = this.config.chatChunkSize): Promise<SendResult> {
-    if (!contextToken.trim()) return { ok: false, errmsg: 'missing context_token; send a message to the bot first' };
+    if (!contextToken.trim()) {
+      return {
+        ok: false,
+        errmsg: 'missing context_token; send a message to the bot first',
+        needsFreshContext: true,
+      };
+    }
     const chunks = splitWechatText(text, chunkSize);
     for (let index = 0; index < chunks.length; index += 1) {
       if (index > 0) await sleep(100);
@@ -256,8 +264,16 @@ export class IlinkClient {
     if (!response.ok) return { ok: false, errmsg: `HTTP ${response.status}: ${raw.slice(0, 300)}`, raw };
     try {
       const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string };
-      const ok = (parsed.ret ?? parsed.errcode ?? 0) === 0 && !parsed.errmsg;
-      return { ok, errmsg: parsed.errmsg, raw: raw.slice(0, 300) };
+      const code = parsed.ret ?? parsed.errcode;
+      const errmsg = parsed.errmsg || undefined;
+      const needsFreshContext = code === -2 || /prepare failed/i.test(errmsg || '');
+      return {
+        ok: (code ?? 0) === 0 && !errmsg,
+        ...(code === undefined ? {} : { code }),
+        ...(errmsg ? { errmsg } : {}),
+        raw: raw.slice(0, 300),
+        ...(needsFreshContext ? { needsFreshContext: true } : {}),
+      };
     } catch {
       return { ok: true, raw: raw.slice(0, 300) };
     }
