@@ -1064,7 +1064,13 @@ function formatQuickSessionList(sessions: ThreadSummary[]): string {
 }
 
 function formatSessionInspectionList(inspections: SessionInspection[], activeOnly: boolean): string {
-  const readOnlyHint = '\n\n本次为只读查看，不会接管或绑定会话。';
+  const hasNotLoaded = inspections.some((inspection) => {
+    const status = cleanActivityText((inspection.snapshot ?? inspection.summary).status?.type)?.toLowerCase();
+    return status === 'notloaded';
+  });
+  const readOnlyHint = `\n\n本次为只读查看，不会接管或绑定会话。${hasNotLoaded
+    ? '\n状态说明：“历史会话（未加载）”表示记录仍在 Codex 历史中，但当前未载入运行中的 App Server，不代表会话丢失或报错。'
+    : ''}`;
   if (!inspections.length) {
     return (activeOnly ? '当前没有检测到正在运行的 Codex 任务。' : '没有找到最近的 Codex 任务。') + readOnlyHint;
   }
@@ -1152,7 +1158,7 @@ function formatInspectionStatus(status?: ThreadSummary['status']): string {
     in_progress: '处理中',
     inprogress: '处理中',
     idle: '空闲',
-    notloaded: '未加载',
+    notloaded: '历史会话（未加载）',
     systemerror: '系统错误',
   };
   const label = labels[type] || status?.type || (type || '状态未知');

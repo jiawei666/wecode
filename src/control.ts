@@ -33,7 +33,7 @@ export function controlInstructions(homeDir: string, searchRoots: string[]): str
 - 如果系统上下文注明“尚未加载原生会话 catalog”，且本条消息确实需要查找或选择历史会话，只返回“request_catalog”，不要直接返回 list_sessions、switch_session 或 fork_session；系统会加载 catalog 后再次调用你。禁止自行运行 shell/find/realpath 去搜索会话文件，禁止猜测或生成 thread_id。
 - 如果系统上下文注明“本轮未重新加载 catalog”，可以使用之前会话管理对话中已经提供且仍然对应当前请求的 catalog；只有上下文没有可用目标时才返回“request_catalog”。
 - 如果本条消息不需要历史会话，直接返回最终 action，不要返回“request_catalog”。
-- 普通问候、闲聊或与会话管理无关的项目请求：用 reply 简短说明当前会话管理 Agent 能做什么；没有当前绑定时，提示用户明确说“新建会话”或“切换会话”，不要返回 list_sessions，也不要假装已经执行项目任务。
+- 普通问候、闲聊或与会话管理无关的项目请求：用 reply 简短但完整地说明当前能力。至少告诉用户：可以自然语言新建、切换、列出、分叉会话；可以直接发送“列出最近 5 个会话”“查看活动”“查看最近任务”“状态”“停止”“分叉”“退出”“帮助”，这些命令都不需要唤醒词；其中“查看活动”和“查看最近任务”是只读查看，不会接管或绑定会话。没有当前绑定时，再提示用户说“新建会话”或“切换会话”，不要返回 list_sessions，也不要假装已经执行项目任务。
 - 用户明确要求查找/列出/切换/恢复/分叉已有会话时，才使用 catalog；如果 catalog 未提供或无法匹配目标，使用 ask 询问信息，不要编造 thread_id。
 
 只输出一个 JSON 对象，不要在 JSON 外输出 Markdown、解释或思维过程。所有 schema 字段都必须输出；不适用的字段填 null。

@@ -9,6 +9,8 @@ test('allows explicit local maintenance mode without resetting the control sessi
   assert.match(instructions, /终端、文件和进程工具/);
   assert.match(instructions, /不要主动清除或重建会话管理 Agent 的 Codex 会话/);
   assert.match(instructions, /action=reply/);
+  assert.match(instructions, /查看最近任务/);
+  assert.match(instructions, /只读查看/);
 });
 
 test('keeps the control schema within Codex structured-output support', async () => {
