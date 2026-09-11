@@ -46,7 +46,7 @@ test('does not send an automatic first-run guide before explicit help', async ()
 
     await bridge.handle(message('你好', 'guide-1'));
     assert.match(sent.at(-1) || '', /我可以帮你/);
-    assert.match(sent.at(-1) || '', /列出会话后，回复“1”“2”/);
+    assert.match(sent.at(-1) || '', /开始：发送“5”或“列出”/);
     assert.doesNotMatch(sent.at(-1) || '', /> \*\*会话管理 Agent\*\*/);
   } finally {
     await bridge.close();
@@ -186,7 +186,7 @@ test('lists recent sessions through the fast path and keeps numeric selection lo
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('列出最近 5 个会话', 'quick-list-1'));
+    await bridge.handle(message('5', 'quick-list-1'));
     await bridge.handle(message('列出最近 5 个会话', 'quick-list-2'));
     assert.equal(controlRuns, 0);
     assert.deepEqual(listLimits, [5]);

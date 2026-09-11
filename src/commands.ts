@@ -29,7 +29,7 @@ function parsePlainCommand(input: string): BridgeCommand | null {
   if (/^(?:你好|您好|嗨|哈喽|hello|hi|有哪些功能|你能做什么)[！!，,。\.\s～~]*$/iu.test(input)) {
     return { kind: 'guide' };
   }
-  if (input === '会话列表') return { kind: 'list_sessions', limit: 20 };
+  if (input === '列出' || input === '会话列表') return { kind: 'list_sessions', limit: 20 };
   const listMatch = /^(?:列出|查看)\s*(?:最近\s*)?(?:的\s*)?(?:(\d+)\s*个\s*)?会话$/u.exec(input);
   if (listMatch) {
     const requestedLimit = Number(listMatch[1] || 20);
@@ -103,11 +103,14 @@ export const STARTUP_HINT = `唤醒词（任选一个）：${CONTROL_WAKE_WORDS_
 export const WELCOME_TEXT = '👋 欢迎使用 wecode！\n\n💬 直接发送任务即可。';
 
 export const QUICK_GUIDE_TEXT = `我可以帮你：
-• 新建、切换、列出、分叉 Codex 会话
-• 查看活动任务和最近任务（只读）
-• 查看状态、停止任务、退出会话
+1. 查看活动任务和最近任务（只读）
+2. 查看状态、停止任务、退出会话
+3. 新建 Codex 会话
+4. 切换 Codex 会话
+5. 列出 Codex 会话
+6. 分叉 Codex 会话
 
-开始：发送“新建会话”或“切换会话”。
+开始：发送“5”或“列出”。
 列出会话后，回复“1”“2”或“第 2 个”即可切换。
 发送“帮助”查看完整说明。`;
 

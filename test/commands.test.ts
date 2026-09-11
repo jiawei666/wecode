@@ -11,6 +11,7 @@ test('keeps only deterministic local commands and honorific wake words', () => {
   assert.deepEqual(parseBridgeCommand('帮助'), { kind: 'help' });
   assert.deepEqual(parseBridgeCommand('你好'), { kind: 'guide' });
   assert.deepEqual(parseBridgeCommand('有哪些功能'), { kind: 'guide' });
+  assert.deepEqual(parseBridgeCommand('列出'), { kind: 'list_sessions', limit: 20 });
   assert.deepEqual(parseBridgeCommand('列出会话'), { kind: 'list_sessions', limit: 20 });
   assert.deepEqual(parseBridgeCommand('列出最近 5 个会话'), { kind: 'list_sessions', limit: 5 });
   assert.deepEqual(parseBridgeCommand('会话列表'), { kind: 'list_sessions', limit: 20 });

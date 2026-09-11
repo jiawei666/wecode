@@ -207,6 +207,10 @@ export class BridgeApp {
       await this.switchToQuickSession(userId, selected);
       return;
     }
+    if (!command && text === '5' && !this.quickSessionLists.has(userId)) {
+      await this.listSessions(userId, 5);
+      return;
+    }
 
     if (this.store.getControl(userId)) {
       await this.handleControl(userId, text);
