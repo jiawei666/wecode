@@ -349,8 +349,8 @@ test('uses completed wording for historical context compaction activity', async 
 
   try {
     await bridge.handle(message('查看最近任务', 'inspect-history-1'));
-    assert.match(sent.at(-1) || '', /状态：历史会话（未加载）/);
-    assert.match(sent.at(-1) || '', /状态说明：.*未加载.*历史中/);
+    assert.doesNotMatch(sent.at(-1) || '', /未加载/);
+    assert.doesNotMatch(sent.at(-1) || '', /状态：/);
     assert.match(sent.at(-1) || '', /最近动作：已整理会话上下文（已完成）/);
     assert.doesNotMatch(sent.at(-1) || '', /正在整理会话上下文/);
   } finally {
