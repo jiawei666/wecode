@@ -103,14 +103,14 @@ export const STARTUP_HINT = `唤醒词（任选一个）：${CONTROL_WAKE_WORDS_
 export const WELCOME_TEXT = '👋 欢迎使用 wecode！\n\n💬 直接发送任务即可。';
 
 export const QUICK_GUIDE_TEXT = `我可以帮你：
-1. 查看活动任务和最近任务（只读）
+1. 查看最近任务
 2. 查看状态（停止、退出也可直接发送）
 3. 新建会话
 4. 切换会话
 5. 列出会话
 6. 分叉会话
 
-开始：发送“5”或“列出”。
+开始：发送“5”或“列出会话”。
 列出会话后，回复“1”“2”或“第 2 个”即可切换。
 发送“帮助”查看完整说明。`;
 
