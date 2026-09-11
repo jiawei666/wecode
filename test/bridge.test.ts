@@ -116,11 +116,15 @@ test('automatically enters session management when a plain message has no sessio
     await bridge.handle(message('帮我处理一个普通请求', 'no-session-1'));
     assert.ok(sent.some((text) => /当前没有会话，已进入会话管理模式/.test(text)));
     assert.match(sent.at(-1) || '', /会话管理 Agent 已响应/);
+    assert.doesNotMatch(sent.join('\n'), /处理中……/);
     assert.doesNotMatch(sent.join('\n'), /唤醒词|帅哥/);
     assert.match(controlPrompt, /帮我处理一个普通请求/);
     assert.match(controlPrompt, /尚未加载原生会话 catalog/);
     assert.equal(catalogCalls, 0);
     assert.equal(store.getControl('user')?.sessionId, 'control-thread');
+
+    await bridge.handle(message('再帮我处理一个普通请求', 'no-session-2'));
+    assert.doesNotMatch(sent.join('\n'), /处理中……/);
   } finally {
     await bridge.close();
     await store.save();

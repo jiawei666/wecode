@@ -34,6 +34,7 @@ interface TurnProgressBuffer {
 const PENDING_REPLY_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000] as const;
 const TURN_PROGRESS_FLUSH_DELAY_MS = 3_000;
 const TURN_PROGRESS_FLUSH_LENGTH = 900;
+const CONTROL_PROGRESS_DELAY_MS = 1_500;
 const QUICK_SESSION_LIST_LIMIT = 20;
 const QUICK_SESSION_LIST_TTL_MS = 10_000;
 
@@ -308,7 +309,12 @@ export class BridgeApp {
     const makePrompt = (catalog: string): string => `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
     const prompt = makePrompt(catalogState);
 
-    await this.reply(userId, '处理中……');
+    // Entering management already sends a status message above. For an
+    // existing control conversation, only show a progress message when the
+    // Agent actually takes a while; fast requests should not produce a
+    // redundant "处理中……" message on every turn.
+    const enteredManagement = Boolean(automaticReason && !alreadyInControl);
+    const delayedProgress = enteredManagement ? undefined : this.scheduleControlProgress(userId);
     try {
       if (control.pendingTakeover && isTakeoverConfirmation(text)) {
         const pending = control.pendingTakeover;
@@ -367,7 +373,32 @@ export class BridgeApp {
       const feedbackText = controlErrorText(error);
       if (latest) this.store.setControl(userId, { ...latest, lastActivityAt: Date.now(), executionFeedback: feedbackText });
       await this.reply(userId, `${feedbackText}\n可继续补充，或发送“退出”。`, { source: 'bridge' });
+    } finally {
+      if (delayedProgress) await delayedProgress.cancel();
     }
+  }
+
+  private scheduleControlProgress(userId: string): { cancel: () => Promise<void> } {
+    let timer: NodeJS.Timeout | undefined;
+    let resolveDone!: () => void;
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    timer = setTimeout(() => {
+      timer = undefined;
+      void this.reply(userId, '处理中……').finally(resolveDone);
+    }, CONTROL_PROGRESS_DELAY_MS);
+    timer.unref();
+    return {
+      cancel: async () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
+          resolveDone();
+        }
+        await done;
+      },
+    };
   }
 
   private async executeAction(userId: string, action: ActionResponse, options: { allowTakeover?: boolean } = {}): Promise<void> {
