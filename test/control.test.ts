@@ -43,6 +43,11 @@ test('validates required fields for control actions after schema parsing', () =>
     limit: 5,
     text: '## 最近 5 个会话',
   });
+  assert.deepEqual(parseAction('{"action":"list\\_sessions","cwd":null,"limit":6,"text":"## 最近 6 个会话"}'), {
+    action: 'list_sessions',
+    limit: 6,
+    text: '## 最近 6 个会话',
+  });
   assert.deepEqual(parseAction('{"action":"fork_session","thread_id":"source-thread"}'), {
     action: 'fork_session',
     thread_id: 'source-thread',
@@ -51,6 +56,11 @@ test('validates required fields for control actions after schema parsing', () =>
   assert.equal(parseAction('{"action":"new_session"}'), null);
   assert.equal(parseAction('{"action":"raw_input","text":"hello"}'), null);
   assert.equal(parseAction('{"action":"unknown"}'), null);
+});
+
+test('rejects a session list without a limit or display text', () => {
+  assert.equal(parseAction('{"action":"list_sessions","cwd":null,"text":"列表"}'), null);
+  assert.equal(parseAction('{"action":"list_sessions","cwd":null,"limit":5}'), null);
 });
 
 test('accepts nullable optional fields emitted by the structured action schema', () => {

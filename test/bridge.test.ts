@@ -128,6 +128,137 @@ test('automatically enters session management when a plain message has no sessio
   }
 });
 
+test('lists recent sessions through the fast path and keeps numeric selection local', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-quick-list-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const listLimits: number[] = [];
+  const used: string[] = [];
+  let controlRuns = 0;
+  const targetCwd = path.join(directory, 'target-project');
+  const sessions = [
+    { id: 'old-thread', cwd: directory, preview: '旧会话', updatedAt: 1_700_000_000, cli: 'codex' as const },
+    { id: 'target-thread', cwd: targetCwd, preview: '目标会话', updatedAt: 1_700_000_200, cli: 'codex' as const },
+    { id: 'new-thread', cwd: directory, preview: '最新会话', updatedAt: 1_700_000_300, cli: 'codex' as const },
+  ];
+  const fakeControl = {
+    run: async () => {
+      controlRuns += 1;
+      throw new Error('列出会话不应启动会话管理 Agent');
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    list: async (_cwd?: string, limit?: number) => {
+      listLimits.push(limit || 0);
+      return sessions;
+    },
+    status: async () => ({ binding: store.getBinding('user'), running: false }),
+    use: async (_userId: string, threadId: string, cwd?: string) => {
+      used.push(threadId);
+      const binding: SessionBinding = {
+        threadId,
+        cwd: cwd || directory,
+        cli: 'codex',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      };
+      store.setBinding('user', binding);
+      return { binding };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('列出最近 5 个会话', 'quick-list-1'));
+    await bridge.handle(message('列出最近 5 个会话', 'quick-list-2'));
+    assert.equal(controlRuns, 0);
+    assert.deepEqual(listLimits, [5]);
+    assert.match(sent.at(-1) || '', /2\. \*\*target-project\*\* — 目标会话（/);
+    assert.match(sent.at(-1) || '', /回复序号即可切换/);
+
+    await bridge.handle(message('2', 'quick-select-1'));
+    assert.deepEqual(used, ['target-thread']);
+    assert.equal(store.getBinding('user')?.threadId, 'target-thread');
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('does not echo raw Agent output when control action parsing fails', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-control-error-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const leakedSkill = '<skill>\\nname: ai-tester-test\\n内容不应回显\\n</skill>';
+  const fakeControl = {
+    run: async () => {
+      throw new Error('会话管理 Agent 未返回有效 action JSON：' + leakedSkill);
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('为什么刚才报错了', 'control-error-1'));
+    const visible = sent.join('\\n');
+    assert.match(visible, /返回格式不正确/);
+    assert.doesNotMatch(visible, /<skill>|ai-tester-test|内容不应回显/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('does not route an unbound skill document into session management', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-skill-input-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  let controlRuns = 0;
+  const fakeControl = {
+    run: async () => {
+      controlRuns += 1;
+      return { action: { action: 'reply' as const, text: '不应调用' }, sessionId: 'control-thread' };
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('<skill>\\nname: ai-tester-test\\n</skill>', 'skill-input-1'));
+    assert.equal(controlRuns, 0);
+    assert.match(sent.at(-1) || '', /技能\/规则文档/);
+    assert.equal(store.getControl('user'), undefined);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('loads the native session catalog only for an explicit session lookup', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-control-catalog-'));
   const store = new StateStore(path.join(directory, 'state.json'));

@@ -1,5 +1,6 @@
 export type BridgeCommand =
   | { kind: 'control'; text: string }
+  | { kind: 'list_sessions'; limit: number }
   | { kind: 'status' }
   | { kind: 'stop' }
   | { kind: 'fork' }
@@ -21,6 +22,12 @@ export function parseBridgeCommand(input: string): BridgeCommand | null {
 }
 
 function parsePlainCommand(input: string): BridgeCommand | null {
+  if (input === '会话列表') return { kind: 'list_sessions', limit: 20 };
+  const listMatch = /^(?:列出|查看)\s*(?:最近\s*)?(?:的\s*)?(?:(\d+)\s*个\s*)?会话$/u.exec(input);
+  if (listMatch) {
+    const requestedLimit = Number(listMatch[1] || 20);
+    return { kind: 'list_sessions', limit: Math.min(Math.max(requestedLimit, 1), 20) };
+  }
   switch (input.trim()) {
     case '状态':
       return { kind: 'status' };

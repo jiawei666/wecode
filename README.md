@@ -104,6 +104,8 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 | `分叉` / `复制会话` | 从当前会话复制已保存历史并新建对话 |
 | `退出` | 退出当前会话管理流程；没有管理流程时解除当前 wecode 会话绑定，外部 Desktop 锁需在 Desktop 中释放 |
 | `帮助` | 查看会话管理帮助 |
+| `列出会话` / `会话列表` | 快速列出最近 20 个会话，不启动会话管理 Agent |
+| `列出最近 5 个会话` | 快速列出指定数量的最近会话（最多 20 个） |
 | `帅哥，帮我……` | 已有会话时进入会话管理模式 |
 | `帅哥，进入本机维护模式……` | 在当前管理会话中直接使用终端、文件和进程权限维护本机 wecode；完成后仍复用同一管理会话 |
 
@@ -150,6 +152,7 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 Codex 的用户可见 commentary/preamble（例如“我先查看两张截图……”）会合并后发送到微信，不添加“思路摘要”或“处理提示”前缀；内部 reasoning summary 不转发，任务完成后的最终回复会单独发送。需要调整 Codex 生成的摘要级别时，可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
 发送“分叉”或“复制会话”会通过 Codex App Server 复制当前会话的已保存历史，创建并绑定一个新会话；原会话不会被关闭。Windows Codex Desktop 占用会话时，确认接管失败也会自动使用这个方式，不会强制结束 Desktop。正在生成中的未完成回复不会复制。
+发送“列出会话”或“会话列表”会走快速通道，直接读取最近 20 个会话；列表显示后直接回复序号（如 `2`）即可快速切换，也兼容“第 2 个”。
 新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出`、`帮助` 可以直接使用。
 
 ## 长文案与 Cloudflare 临时链接
@@ -243,7 +246,7 @@ wecode 默认请求 Codex 生成 `detailed` reasoning summary；其中用户可�
 
 - `wecode` 无法识别：源码目录执行 `npm link`；如果刚安装了 Node.js 或 cloudflared，重新打开 PowerShell，再执行 `wecode restart`。
 - `codex: command not found`：先确认 Codex CLI 已安装，并且 `codex --version` 可执行。
-- 不需要 `/sessions`、`/use` 或序号切换：直接发送 `状态`、`停止`、`分叉`、`退出`、`帮助`，会话选择用自然语言描述。
+- 不需要 `/sessions`、`/use`：直接发送“列出会话”，再回复序号（如 `2`）即可快速切换；复杂条件仍可用自然语言描述。
 - `node:events ... Unhandled 'error' event`：通常是子进程命令不存在；重新运行 Windows 一键安装脚本，确认 `codex --version` 和 `cloudflared --version` 后再执行 `wecode restart`。
 - 后台启动后没有响应：执行 `wecode status` 和 `wecode logs` 查看进程与错误日志。
 - 微信发送日志出现 `prepare failed`：通常是长任务结束时使用的 `context_token` 已过期，不等同于发送频率过高；wecode 会保留未送达的最终结果，收到下一条消息刷新 token 后优先发送。

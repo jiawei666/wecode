@@ -22,7 +22,7 @@ export interface SessionAdapter {
   /** Attempt to release only the external process that owns this exact thread lock. */
   releaseExternalWriter?(threadId: string): Promise<ExternalWriterRelease>;
   readThread(threadId: string): Promise<ThreadSnapshot>;
-  listThreads(cwd?: string): Promise<ThreadSummary[]>;
+  listThreads(cwd?: string, limit?: number): Promise<ThreadSummary[]>;
   startTurn(threadId: string, cwd: string, text: string, options?: SessionLaunchOptions): Promise<string>;
   steerTurn(threadId: string, turnId: string, text: string): Promise<string>;
   interrupt(threadId: string, turnId: string): Promise<void>;

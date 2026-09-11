@@ -30,6 +30,8 @@ interface TurnAccumulator {
 const TAKEOVER_IDLE_POLL_ATTEMPTS = 20;
 const TAKEOVER_RETRY_ATTEMPTS = 12;
 const TAKEOVER_RETRY_DELAY_MS = 250;
+const SESSION_LIST_CACHE_TTL_MS = 5_000;
+const MAX_SESSION_LIST_RESULTS = 500;
 
 export interface SessionStatus {
   binding?: SessionBinding;
@@ -67,6 +69,7 @@ export class SessionManager {
   private pendingNotificationTimers = new Map<string, NodeJS.Timeout>();
   private completedTurns = new Set<string>();
   private completedTurnTimers = new Map<string, NodeJS.Timeout>();
+  private readonly sessionListCache = new Map<string, { expiresAt: number; value: ThreadSummary[] }>();
   private readonly unsubscribeNotifications: () => void;
 
   constructor(
@@ -101,6 +104,7 @@ export class SessionManager {
     const thread = await this.appServer.startThread(cwd, launch);
     const binding = this.makeBinding(thread, cwd, undefined, false, launch);
     this.bind(userId, binding);
+    this.clearSessionListCache();
     return { binding };
   }
 
@@ -110,14 +114,16 @@ export class SessionManager {
     requestedCwd?: string,
     options: SessionLaunchOptions = {},
     takeover = false,
+    knownThread?: ThreadSummary,
   ): Promise<{ binding: SessionBinding }> {
     const previous = this.store.getBinding(userId);
     const fallbackCwd = previous?.threadId === threadId ? previous.cwd : undefined;
-    const thread = await this.resumeForUse(threadId, requestedCwd || fallbackCwd, takeover);
+    const thread = await this.resumeForUse(threadId, requestedCwd || fallbackCwd, takeover, knownThread);
     const cwd = await this.validCwd(requestedCwd || (previous?.threadId === threadId ? previous.cwd : thread.cwd || this.config.defaultCwd));
     const inherited = previous?.threadId === threadId ? previous : undefined;
     const binding = this.makeBinding(thread, cwd, inherited, true, options);
     this.bind(userId, binding);
+    this.clearSessionListCache();
     return { binding };
   }
 
@@ -140,11 +146,23 @@ export class SessionManager {
     );
     const binding = this.makeBinding(thread, cwd, undefined, true, launch);
     this.bind(userId, binding);
+    this.clearSessionListCache();
     return { binding };
   }
 
-  async list(cwd?: string): Promise<ThreadSummary[]> {
-    return this.appServer.listThreads(cwd);
+  async list(cwd?: string, limit = MAX_SESSION_LIST_RESULTS): Promise<ThreadSummary[]> {
+    const normalizedCwd = cwd?.trim() || '';
+    const normalizedLimit = Number.isInteger(limit) && limit > 0
+      ? Math.min(limit, MAX_SESSION_LIST_RESULTS)
+      : MAX_SESSION_LIST_RESULTS;
+    const key = [normalizedCwd, normalizedLimit].join('|');
+    const cached = this.sessionListCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return [...cached.value];
+
+    const value = (await this.appServer.listThreads(normalizedCwd || undefined, normalizedLimit))
+      .slice(0, normalizedLimit);
+    this.sessionListCache.set(key, { expiresAt: Date.now() + SESSION_LIST_CACHE_TTL_MS, value: [...value] });
+    return [...value];
   }
 
   async resolveThreadId(identifier: string): Promise<string> {
@@ -495,6 +513,10 @@ export class SessionManager {
     this.store.setBinding(userId, binding);
   }
 
+  private clearSessionListCache(): void {
+    this.sessionListCache.clear();
+  }
+
   private canRecycleAppServer(userId: string, threadId: string): boolean {
     const hasOtherBinding = Object.keys(this.store.get().bindings).some((otherUserId) => otherUserId !== userId);
     if (hasOtherBinding) return false;
@@ -509,13 +531,20 @@ export class SessionManager {
     return cwd;
   }
 
-  private async resumeForUse(threadId: string, requestedCwd?: string, takeover = false): Promise<ThreadSummary> {
+  private async resumeForUse(
+    threadId: string,
+    requestedCwd?: string,
+    takeover = false,
+    knownThread?: ThreadSummary,
+  ): Promise<ThreadSummary> {
     // `thread/read` is deliberately non-owning. Check it first so an active
     // client is never silently joined just because `thread/resume` happens to
     // succeed. This is also the cross-platform replacement for detecting an
     // external terminal: ownership is decided by App Server state, not a
     // process, shell, or terminal implementation.
-    const initialSnapshot = await this.readOccupiedThread(threadId);
+    const initialSnapshot = knownThread && explicitlyIdle(knownThread)
+      ? undefined
+      : await this.readOccupiedThread(threadId);
     if (initialSnapshot && threadIsRunning(initialSnapshot)) {
       const cwd = requestedCwd || initialSnapshot.cwd || this.config.defaultCwd;
       if (!takeover) throw new SessionOccupiedError(threadId, cwd, true, '目标会话当前仍有活动任务');
@@ -539,7 +568,7 @@ export class SessionManager {
     // A race may start a turn after the non-owning read but before resume.
     // Release only our subscription, inspect again, and fail closed unless
     // the caller explicitly confirmed takeover.
-    if (threadIsRunning(resumed)) {
+    if (threadIsRunning(resumed) || (knownThread && !hasStatus(resumed))) {
       await this.releaseCurrentSubscription(threadId);
       const snapshot = await this.readOccupiedThread(threadId);
       const cwd = requestedCwd || snapshot?.cwd || resumed.cwd || this.config.defaultCwd;
@@ -693,6 +722,14 @@ function threadIsRunning(thread?: ThreadSummary | ThreadSnapshot): boolean {
   return ['active', 'running', 'in_progress'].includes(thread?.status?.type ?? '')
     || Boolean(thread?.status?.activeFlags?.length)
     || threadTurns(thread).some(isTurnRunning);
+}
+
+function explicitlyIdle(thread: ThreadSummary): boolean {
+  return Boolean(thread.status?.type) && !threadIsRunning(thread);
+}
+
+function hasStatus(thread: ThreadSummary): boolean {
+  return Boolean(thread.status?.type || thread.status?.activeFlags);
 }
 
 function activeTurnOf(thread: ThreadSnapshot): ThreadTurnSummary | undefined {

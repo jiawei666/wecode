@@ -13,10 +13,11 @@ import type {
   SessionBinding,
   SessionLaunchOptions,
   TurnProgress,
+  ThreadSummary,
   TurnResult,
 } from './model.js';
 import { renderResponse, PagePublisher } from './render.js';
-import { formatModel, formatTimestamp } from './session-display.js';
+import { formatModel, formatTimestamp, normalizeTimestamp } from './session-display.js';
 import { SessionManager, SessionOccupiedError } from './sessions.js';
 import { StateStore } from './state.js';
 
@@ -30,6 +31,14 @@ interface TurnProgressBuffer {
 const PENDING_REPLY_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000] as const;
 const TURN_PROGRESS_FLUSH_DELAY_MS = 3_000;
 const TURN_PROGRESS_FLUSH_LENGTH = 900;
+const QUICK_SESSION_LIST_LIMIT = 20;
+const QUICK_SESSION_LIST_TTL_MS = 10_000;
+
+interface QuickSessionList {
+  expiresAt: number;
+  limit: number;
+  sessions: ThreadSummary[];
+}
 
 export class BridgeApp {
   private readonly controlAgent: ControlAgent;
@@ -47,6 +56,7 @@ export class BridgeApp {
   private readonly finalReplyChains = new Map<string, Promise<void>>();
   private readonly turnProgress = new Map<string, TurnProgressBuffer>();
   private readonly progressReplyChains = new Map<string, Promise<void>>();
+  private readonly quickSessionLists = new Map<string, QuickSessionList>();
 
   constructor(
     private readonly config: AppConfig,
@@ -78,6 +88,7 @@ export class BridgeApp {
     await this.pages.close();
     await this.sessions.close();
     await this.store.save();
+    this.quickSessionLists.clear();
   }
 
   async handle(message: InboundMessage): Promise<void> {
@@ -170,9 +181,21 @@ export class BridgeApp {
       await this.sendStatus(userId);
       return;
     }
+    if (command?.kind === 'list_sessions') {
+      await this.listSessions(userId, command.limit);
+      return;
+    }
     if (command?.kind === 'control') {
       await this.handleControl(userId, command.text);
       return;
+    }
+
+    if (!this.store.getControl(userId)) {
+      const selected = this.takeQuickSessionSelection(userId, text);
+      if (selected) {
+        await this.switchToQuickSession(userId, selected);
+        return;
+      }
     }
 
     if (this.store.getControl(userId)) {
@@ -181,11 +204,59 @@ export class BridgeApp {
     }
 
     const binding = this.store.getBinding(userId);
+    if (!binding && !this.store.getControl(userId) && looksLikeSkillDocument(text)) {
+      await this.reply(
+        userId,
+        '检测到这是一段技能/规则文档，不是会话管理指令。当前没有绑定 Codex 会话，请先发送“新建会话”并指定项目目录，或先切换会话；绑定后再发送这段内容。',
+      );
+      return;
+    }
     if (!binding) {
       await this.handleControl(userId, text, 'no-session');
       return;
     }
     await this.sendToTarget(userId, text);
+  }
+
+  private async listSessions(userId: string, requestedLimit: number): Promise<void> {
+    const limit = Math.min(Math.max(Math.floor(requestedLimit) || QUICK_SESSION_LIST_LIMIT, 1), QUICK_SESSION_LIST_LIMIT);
+    const cached = this.quickSessionLists.get(userId);
+    let sessions: ThreadSummary[];
+    if (cached && cached.expiresAt > Date.now() && cached.limit >= limit) {
+      sessions = cached.sessions.slice(0, limit);
+    } else {
+      await this.reply(userId, '正在读取最近会话……');
+      sessions = (await this.sessions.list(undefined, limit))
+        .sort((left, right) => (normalizeTimestamp(right.updatedAt) ?? 0) - (normalizeTimestamp(left.updatedAt) ?? 0))
+        .slice(0, limit);
+      this.quickSessionLists.set(userId, {
+        expiresAt: Date.now() + QUICK_SESSION_LIST_TTL_MS,
+        limit,
+        sessions: [...sessions],
+      });
+    }
+    await this.reply(userId, formatQuickSessionList(sessions));
+  }
+
+  private takeQuickSessionSelection(userId: string, text: string): ThreadSummary | undefined {
+    const cached = this.quickSessionLists.get(userId);
+    if (!cached || cached.expiresAt <= Date.now()) {
+      this.quickSessionLists.delete(userId);
+      return undefined;
+    }
+    const match = /^(?:(?:切换(?:到)?|使用|打开)\s*)?(?:第\s*)?(\d+)(?:\s*个)?(?:会话)?$/u.exec(text);
+    if (!match) return undefined;
+    const index = Number(match[1]) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= cached.sessions.length) return undefined;
+    return cached.sessions[index];
+  }
+
+  private async switchToQuickSession(userId: string, thread: ThreadSummary): Promise<void> {
+    this.quickSessionLists.delete(userId);
+    await this.reply(userId, '正在恢复会话……');
+    await this.stopBeforeSwitch(userId);
+    const result = await this.sessions.use(userId, thread.id, thread.cwd, launchOptions(thread), false, thread);
+    await this.reply(userId, this.switchedText(result.binding));
   }
 
   private async handleControl(userId: string, text: string, automaticReason?: 'no-session' | 'stale-session'): Promise<void> {
@@ -932,6 +1003,32 @@ export class BridgeApp {
   }
 }
 
+function formatQuickSessionList(sessions: ThreadSummary[]): string {
+  if (!sessions.length) return '没有找到历史 Codex 会话。';
+  const rows = sessions.map((thread, index) => (
+    String(index + 1)
+      + '. **'
+      + sessionDisplayName(thread)
+      + '** — '
+      + sessionPreview(thread)
+      + '（'
+      + formatTimestamp(thread.updatedAt)
+      + '）'
+  ));
+  return rows.join('\n') + '\n\n回复序号即可切换（10 分钟内）。';
+}
+
+function sessionDisplayName(thread: ThreadSummary): string {
+  const cwd = thread.cwd?.trim().replace(/[\\/]+$/u, '');
+  const directory = cwd?.split(/[\\/]/u).at(-1);
+  return directory || thread.name?.trim() || '未命名会话';
+}
+
+function sessionPreview(thread: ThreadSummary): string {
+  const value = (thread.preview || thread.name || '未命名会话').replace(/\s+/gu, ' ').trim();
+  return value.length > 160 ? value.slice(0, 157) + '...' : value;
+}
+
 function launchOptions(value: {
   cli?: SessionLaunchOptions['cli'];
   model?: string;
@@ -966,10 +1063,16 @@ function controlErrorText(error: unknown): string {
   const message = errorMessage(error);
   if (/interrupt|signal/i.test(message)) return '会话管理 Agent 已中断。';
   if (/no rollout found|thread not found/i.test(message)) return '会话管理 Agent 会话无法恢复；当前流程仍保留。';
+  if (message.includes('reasoning_effort must not be empty') || message.includes('model_reasoning_effort')) {
+    return '会话管理 Agent 配置无效：model_reasoning_effort 为空；请删除空配置或设置有效推理强度后重启。';
+  }
+  if (message.includes('会话管理 Agent 返回格式不正确') || message.includes('未返回有效 action JSON')) {
+    return '会话管理 Agent 返回格式不正确；请先发送“退出”后重试，或先指定项目目录。';
+  }
   if (/thread-store conflict|active writer|already in use|being used|occupied|locked|another client|其他 Codex 客户端|原生终端占用/i.test(message)) {
     return '目标会话被占用；回复“确认接管”安全恢复，或先结束外部任务。';
   }
-  return `会话管理 Agent 暂时没有完成这次请求：${message.slice(0, 240)}`;
+  return '会话管理 Agent 暂时没有完成这次请求；请稍后重试，详细原因已记录在本地日志。';
 }
 
 function userFacingError(error: unknown): string {
@@ -982,6 +1085,12 @@ function userFacingError(error: unknown): string {
   }
   if (/项目目录不能为空|项目目录不存在|没有当前 Codex 会话|会话 ID|Claude Code/i.test(message)) return message;
   return '处理请求时遇到内部错误，请稍后重试；详细信息已记录在本地日志。';
+}
+
+function looksLikeSkillDocument(input: string): boolean {
+  const text = input.trim();
+  return /<skill\b[\s\S]*?<\/skill>/i.test(text)
+    || (text.length >= 2000 && /\bSKILL\.md\b/i.test(text));
 }
 
 function isStaleSessionError(error: unknown): boolean {

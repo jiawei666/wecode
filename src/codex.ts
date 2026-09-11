@@ -406,13 +406,14 @@ export class CodexAppServer {
     return { ...result.thread, cli: 'codex' };
   }
 
-  async listThreads(cwd?: string): Promise<ThreadSummary[]> {
+  async listThreads(cwd?: string, limit = 500): Promise<ThreadSummary[]> {
     await this.connect();
     const threads: ThreadSummary[] = [];
+    const maxResults = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 500;
     let cursor: string | undefined;
     do {
       const params: Record<string, unknown> = {
-        limit: 100,
+        limit: Math.min(100, maxResults - threads.length),
         sortKey: 'recency_at',
         sortDirection: 'desc',
         sourceKinds: ['cli', 'vscode', 'appServer'],
@@ -420,9 +421,9 @@ export class CodexAppServer {
       if (cwd) params.cwd = cwd;
       if (cursor) params.cursor = cursor;
       const result = await this.request<AppServerListResponse>('thread/list', params);
-      threads.push(...(result.data ?? []).map((thread) => ({ ...thread, cli: 'codex' as const })));
+      threads.push(...(result.data ?? []).slice(0, maxResults - threads.length).map((thread) => ({ ...thread, cli: 'codex' as const })));
       cursor = result.nextCursor || undefined;
-    } while (cursor && threads.length < 500);
+    } while (cursor && threads.length < maxResults);
     return threads;
   }
 
