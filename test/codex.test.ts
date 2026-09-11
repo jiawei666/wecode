@@ -27,6 +27,7 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
   let params: Record<string, unknown> | undefined;
   let forkParams: Record<string, unknown> | undefined;
   let resumeParams: Record<string, unknown> | undefined;
+  let listParams: Record<string, unknown> | undefined;
   let turnParams: Record<string, unknown> | undefined;
   let readParams: Record<string, unknown> | undefined;
   let steerParams: Record<string, unknown> | undefined;
@@ -44,6 +45,9 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
       } else if (message.method === 'thread/resume' && message.id !== undefined) {
         resumeParams = message.params;
         socket.send(JSON.stringify({ id: message.id, result: { thread: { id: 'test-thread' } } }));
+      } else if (message.method === 'thread/list' && message.id !== undefined) {
+        listParams = message.params;
+        socket.send(JSON.stringify({ id: message.id, result: { data: [] } }));
       } else if (message.method === 'thread/read' && message.id !== undefined) {
         readParams = message.params;
         socket.send(JSON.stringify({
@@ -84,6 +88,8 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
     const resumed = await appServer.resumeThread('test-thread');
     assert.equal(resumed.id, 'test-thread');
     assert.equal((resumeParams?.config as Record<string, unknown>).model_reasoning_summary, 'detailed');
+    assert.deepEqual(await appServer.listThreads(undefined, 5), []);
+    assert.equal(listParams?.archived, false);
     const snapshot = await appServer.readThread('test-thread');
     assert.equal(readParams?.threadId, 'test-thread');
     assert.equal(readParams?.includeTurns, true);

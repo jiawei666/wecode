@@ -416,6 +416,7 @@ export class CodexAppServer {
         limit: Math.min(100, maxResults - threads.length),
         sortKey: 'recency_at',
         sortDirection: 'desc',
+        archived: false,
         sourceKinds: ['cli', 'vscode', 'appServer'],
       };
       if (cwd) params.cwd = cwd;
