@@ -1262,9 +1262,12 @@ function truncateActivityText(value: string, maxLength = 180): string {
 }
 
 function sessionDisplayName(thread: ThreadSummary): string {
+  const name = cleanActivityText(thread.name);
+  if (name) return truncateActivityText(name, 120);
+
   const cwd = thread.cwd?.trim().replace(/[\\/]+$/u, '');
   const directory = cwd?.split(/[\\/]/u).at(-1);
-  return directory || thread.name?.trim() || '未命名会话';
+  return directory || '未命名会话';
 }
 
 function sessionPreview(thread: ThreadSummary): string {

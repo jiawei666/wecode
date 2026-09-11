@@ -171,7 +171,7 @@ test('lists recent sessions through the fast path and keeps numeric selection lo
   const targetCwd = path.join(directory, 'target-project');
   const sessions = [
     { id: 'old-thread', cwd: directory, preview: '旧会话', updatedAt: 1_700_000_000, cli: 'codex' as const },
-    { id: 'target-thread', cwd: targetCwd, preview: '目标会话', updatedAt: 1_700_000_200, cli: 'codex' as const },
+    { id: 'target-thread', cwd: targetCwd, name: '目标会话名称', preview: '目标会话', updatedAt: 1_700_000_200, cli: 'codex' as const },
     { id: 'new-thread', cwd: directory, preview: '最新会话', updatedAt: 1_700_000_300, cli: 'codex' as const },
   ];
   const fakeControl = {
@@ -213,7 +213,8 @@ test('lists recent sessions through the fast path and keeps numeric selection lo
     await bridge.handle(message('列出最近 5 个会话', 'quick-list-2'));
     assert.equal(controlRuns, 0);
     assert.deepEqual(listLimits, [5]);
-    assert.match(sent.at(-1) || '', /2\. \*\*target-project\*\* — 目标会话\n\n更新时间：/);
+    assert.match(sent.at(-1) || '', /2\. \*\*目标会话名称\*\* — 目标会话\n\n更新时间：/);
+    assert.doesNotMatch(sent.at(-1) || '', /2\. \*\*target-project\*\*/);
     assert.match(sent.at(-1) || '', /回复序号即可切换/);
 
     await bridge.handle(message('2', 'quick-select-1'));
@@ -378,6 +379,7 @@ test('uses completed wording for historical context compaction activity', async 
   const sent: string[] = [];
   const snapshot: ThreadSnapshot = {
     id: 'historical-thread',
+    name: '历史会话名称',
     cwd: directory,
     updatedAt: 1_700_000_300,
     status: { type: 'notLoaded' },
@@ -390,6 +392,7 @@ test('uses completed wording for historical context compaction activity', async 
   const inspection: SessionInspection = {
     summary: {
       id: 'historical-thread',
+      name: '历史会话名称',
       cwd: directory,
       preview: '历史会话',
       updatedAt: 1_700_000_300,
@@ -420,6 +423,7 @@ test('uses completed wording for historical context compaction activity', async 
     await bridge.handle(message('查看最近任务', 'inspect-history-1'));
     assert.doesNotMatch(sent.at(-1) || '', /未加载/);
     assert.doesNotMatch(sent.at(-1) || '', /状态：/);
+    assert.match(sent.at(-1) || '', /1\. \*\*历史会话名称\*\*/);
     assert.match(sent.at(-1) || '', /最近动作：已整理会话上下文（已完成）/);
     assert.match(sent.at(-1) || '', /最近动作：已整理会话上下文（已完成）\n\n更新时间：/);
     assert.doesNotMatch(sent.at(-1) || '', /正在整理会话上下文/);
