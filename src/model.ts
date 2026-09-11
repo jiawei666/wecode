@@ -132,6 +132,19 @@ export interface ThreadSummary {
 export interface ThreadTurnSummary {
   id: string;
   status?: string;
+  createdAt?: number | string;
+  updatedAt?: number | string;
+  items?: ThreadItemSummary[];
+}
+
+/** Persisted turn item fields used by the read-only activity view. */
+export interface ThreadItemSummary {
+  id?: string;
+  type?: string;
+  phase?: string;
+  text?: string;
+  status?: string;
+  [key: string]: unknown;
 }
 
 export interface ThreadSnapshot extends ThreadSummary {

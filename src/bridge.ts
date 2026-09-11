@@ -14,11 +14,14 @@ import type {
   SessionLaunchOptions,
   TurnProgress,
   ThreadSummary,
+  ThreadItemSummary,
+  ThreadSnapshot,
+  ThreadTurnSummary,
   TurnResult,
 } from './model.js';
 import { renderResponse, PagePublisher } from './render.js';
 import { formatModel, formatTimestamp, normalizeTimestamp } from './session-display.js';
-import { SessionManager, SessionOccupiedError } from './sessions.js';
+import { SessionManager, SessionOccupiedError, type SessionInspection } from './sessions.js';
 import { StateStore } from './state.js';
 
 interface TurnProgressBuffer {
@@ -185,6 +188,10 @@ export class BridgeApp {
       await this.listSessions(userId, command.limit);
       return;
     }
+    if (command?.kind === 'inspect_sessions') {
+      await this.inspectSessions(userId, command.limit, command.activeOnly);
+      return;
+    }
     if (command?.kind === 'control') {
       await this.handleControl(userId, command.text);
       return;
@@ -236,6 +243,13 @@ export class BridgeApp {
       });
     }
     await this.reply(userId, formatQuickSessionList(sessions));
+  }
+
+  private async inspectSessions(userId: string, requestedLimit: number, activeOnly: boolean): Promise<void> {
+    const limit = Math.min(Math.max(Math.floor(requestedLimit) || 5, 1), 20);
+    await this.reply(userId, activeOnly ? '正在读取活动任务（只读）……' : '正在读取最近任务（只读）……');
+    const inspections = await this.sessions.inspect(limit, activeOnly);
+    await this.reply(userId, formatSessionInspectionList(inspections, activeOnly));
   }
 
   private takeQuickSessionSelection(userId: string, text: string): ThreadSummary | undefined {
@@ -1016,6 +1030,163 @@ function formatQuickSessionList(sessions: ThreadSummary[]): string {
       + '）'
   ));
   return rows.join('\n') + '\n\n回复序号即可切换（10 分钟内）。';
+}
+
+function formatSessionInspectionList(inspections: SessionInspection[], activeOnly: boolean): string {
+  const readOnlyHint = '\n\n本次为只读查看，不会接管或绑定会话。';
+  if (!inspections.length) {
+    return (activeOnly ? '当前没有检测到正在运行的 Codex 任务。' : '没有找到最近的 Codex 任务。') + readOnlyHint;
+  }
+  const title = activeOnly ? '当前活动 Codex 任务（只读）' : '最近 Codex 任务（只读）';
+  const rows = inspections.map((inspection, index) => {
+    const thread = inspection.snapshot ?? inspection.summary;
+    const actionLabel = inspectionThreadIsRunning(thread) ? '当前动作' : '最近动作';
+    return [
+      `${index + 1}. **${sessionDisplayName(thread)}**`,
+      `状态：${formatInspectionStatus(thread.status)}`,
+      `${actionLabel}：${describeInspectionActivity(inspection)}`,
+      `更新时间：${formatTimestamp(inspection.summary.updatedAt ?? inspection.snapshot?.updatedAt)}`,
+    ].join('\n');
+  });
+  return `${title}\n\n${rows.join('\n\n')}${readOnlyHint}`;
+}
+
+function describeInspectionActivity(inspection: SessionInspection): string {
+  const thread = inspection.snapshot ?? inspection.summary;
+  const turn = latestInspectionTurn(inspection.snapshot);
+  const item = latestInspectionItem(turn);
+  if (item) return describeInspectionItem(item);
+  if (turn?.status) return `turn ${formatInspectionItemStatus(turn.status).replace(/[（）]/gu, '') || turn.status}`;
+  const preview = cleanActivityText(thread.preview || thread.name);
+  if (preview) return truncateActivityText(preview);
+  return inspectionThreadIsRunning(thread)
+    ? '会话正在运行，暂未读到最新任务项'
+    : '暂无可展示的任务详情';
+}
+
+function latestInspectionTurn(snapshot?: ThreadSnapshot): ThreadTurnSummary | undefined {
+  const turns = snapshot?.turns ?? [];
+  return [...turns].reverse().find(isInspectionTurnRunning) ?? turns.at(-1);
+}
+
+function latestInspectionItem(turn?: ThreadTurnSummary): ThreadItemSummary | undefined {
+  const items = turn?.items ?? [];
+  return [...items].reverse().find(isInspectionItemRunning) ?? items.at(-1);
+}
+
+function describeInspectionItem(item: ThreadItemSummary): string {
+  const type = cleanActivityText(item.type)?.toLowerCase().replace(/[^a-z0-9]/gu, '') || '';
+  const suffix = formatInspectionItemStatus(item.status);
+  if (type.includes('reasoning')) return `正在分析任务${suffix}`;
+  if (type.includes('contextcompaction')) return `正在整理会话上下文${suffix}`;
+  if (type.includes('commandexecution')) {
+    const command = cleanActivityText(item.command);
+    return `执行命令${command ? `：${truncateActivityText(command, 160)}` : ''}${suffix}`;
+  }
+  if (type.includes('filechange')) {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const paths = changes
+      .map((change) => asActivityRecord(change))
+      .map((change) => cleanActivityText(change?.path) || cleanActivityText(change?.filePath))
+      .filter((value): value is string => Boolean(value));
+    return `修改文件${paths.length ? `：${paths.slice(0, 4).join('、')}${paths.length > 4 ? ' 等' : ''}` : ''}${suffix}`;
+  }
+  if (type.includes('mcptoolcall')) {
+    const server = cleanActivityText(item.server) || cleanActivityText(item.serverName);
+    const tool = cleanActivityText(item.tool) || cleanActivityText(item.name);
+    const name = [server, tool].filter(Boolean).join('/');
+    return `调用工具${name ? `：${name}` : ''}${suffix}`;
+  }
+  if (type.includes('plan')) {
+    const plan = cleanActivityText(item.text) || cleanActivityText(item.summary);
+    return `执行计划${plan ? `：${truncateActivityText(plan)}` : ''}${suffix}`;
+  }
+  if (type.includes('agentmessage')) {
+    const text = cleanActivityText(item.text);
+    return `${item.phase === 'commentary' ? '进度' : '生成回复'}${text ? `：${truncateActivityText(text)}` : ''}${suffix}`;
+  }
+  if (type.includes('usermessage')) {
+    const text = cleanActivityText(item.text);
+    return `处理请求${text ? `：${truncateActivityText(text)}` : ''}${suffix}`;
+  }
+  return `${type ? `处理 ${type}` : '正在处理任务'}${suffix}`;
+}
+
+function formatInspectionStatus(status?: ThreadSummary['status']): string {
+  const type = cleanActivityText(status?.type)?.toLowerCase() || '';
+  const labels: Record<string, string> = {
+    active: '处理中',
+    running: '处理中',
+    in_progress: '处理中',
+    inprogress: '处理中',
+    idle: '空闲',
+    notloaded: '未加载',
+    systemerror: '系统错误',
+  };
+  const label = labels[type] || status?.type || (type || '状态未知');
+  const flags = (status?.activeFlags ?? []).map(formatInspectionFlag).filter(Boolean);
+  return flags.length ? `${label}（${flags.join('、')}）` : label;
+}
+
+function formatInspectionFlag(flag: string): string {
+  const labels: Record<string, string> = {
+    waitingOnApproval: '等待审批',
+    waitingOnUserInput: '等待用户输入',
+    waitingOnUser: '等待用户输入',
+    running: '运行中',
+  };
+  return labels[flag] || flag;
+}
+
+function formatInspectionItemStatus(status?: string): string {
+  const value = cleanActivityText(status)?.toLowerCase() || '';
+  if (!value) return '';
+  const labels: Record<string, string> = {
+    active: '运行中',
+    running: '运行中',
+    in_progress: '运行中',
+    inprogress: '运行中',
+    started: '运行中',
+    waiting: '等待中',
+    waitingonapproval: '等待审批',
+    waitingonuserinput: '等待用户输入',
+    completed: '已完成',
+    failed: '失败',
+    interrupted: '已中断',
+  };
+  return `（${labels[value.replace(/[^a-z0-9]/gu, '')] || status}）`;
+}
+
+function inspectionThreadIsRunning(thread: ThreadSummary | ThreadSnapshot): boolean {
+  const type = cleanActivityText(thread.status?.type)?.toLowerCase() || '';
+  return ['active', 'running', 'in_progress', 'inprogress'].includes(type)
+    || Boolean(thread.status?.activeFlags?.length)
+    || ('turns' in thread && (thread.turns ?? []).some(isInspectionTurnRunning));
+}
+
+function isInspectionTurnRunning(turn: ThreadTurnSummary): boolean {
+  const status = cleanActivityText(turn.status)?.toLowerCase() || '';
+  return ['active', 'running', 'in_progress', 'inprogress', 'started'].includes(status) || /progress/u.test(status);
+}
+
+function isInspectionItemRunning(item: ThreadItemSummary): boolean {
+  const status = cleanActivityText(item.status)?.toLowerCase() || '';
+  return ['active', 'running', 'in_progress', 'inprogress', 'started', 'waiting'].includes(status)
+    || /progress/u.test(status);
+}
+
+function asActivityRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+function cleanActivityText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/\s+/gu, ' ').trim();
+  return text || undefined;
+}
+
+function truncateActivityText(value: string, maxLength = 180): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
 function sessionDisplayName(thread: ThreadSummary): string {

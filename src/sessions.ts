@@ -38,6 +38,11 @@ export interface SessionStatus {
   running: boolean;
 }
 
+export interface SessionInspection {
+  summary: ThreadSummary;
+  snapshot?: ThreadSnapshot;
+}
+
 export interface SessionReleaseResult {
   released: boolean;
   externalWriter?: ExternalWriterRelease;
@@ -163,6 +168,42 @@ export class SessionManager {
       .slice(0, normalizedLimit);
     this.sessionListCache.set(key, { expiresAt: Date.now() + SESSION_LIST_CACHE_TTL_MS, value: [...value] });
     return [...value];
+  }
+
+  /**
+   * Read recent activity without resuming, subscribing to, or binding a thread.
+   * The list response normally identifies active threads; reading a few recent
+   * summaries as a fallback also handles runtimes that update status lazily.
+   */
+  async inspect(limit = 5, activeOnly = true): Promise<SessionInspection[]> {
+    const normalizedLimit = Number.isInteger(limit) && limit > 0
+      ? Math.min(limit, 20)
+      : 5;
+    const catalogLimit = activeOnly
+      ? Math.min(MAX_SESSION_LIST_RESULTS, Math.max(20, normalizedLimit * 10))
+      : normalizedLimit;
+    const catalog = await this.appServer.listThreads(undefined, catalogLimit);
+    const activeCandidates = catalog.filter((thread) => threadIsRunning(thread));
+    const candidates = activeOnly
+      ? (activeCandidates.length ? activeCandidates : catalog.slice(0, normalizedLimit)).slice(0, normalizedLimit)
+      : catalog.slice(0, normalizedLimit);
+    const inspections = await Promise.all(candidates.map(async (summary): Promise<SessionInspection> => {
+      try {
+        const snapshot = await this.appServer.readThread(summary.id);
+        return {
+          summary: {
+            ...summary,
+            status: snapshot.status ?? summary.status,
+          },
+          snapshot,
+        };
+      } catch {
+        return { summary };
+      }
+    }));
+    return activeOnly
+      ? inspections.filter((inspection) => threadIsRunning(inspection.snapshot ?? inspection.summary))
+      : inspections;
   }
 
   async resolveThreadId(identifier: string): Promise<string> {

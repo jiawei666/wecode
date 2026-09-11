@@ -12,6 +12,9 @@ test('keeps only deterministic local commands and honorific wake words', () => {
   assert.deepEqual(parseBridgeCommand('列出会话'), { kind: 'list_sessions', limit: 20 });
   assert.deepEqual(parseBridgeCommand('列出最近 5 个会话'), { kind: 'list_sessions', limit: 5 });
   assert.deepEqual(parseBridgeCommand('会话列表'), { kind: 'list_sessions', limit: 20 });
+  assert.deepEqual(parseBridgeCommand('查看活动'), { kind: 'inspect_sessions', limit: 5, activeOnly: true });
+  assert.deepEqual(parseBridgeCommand('查看最近任务'), { kind: 'inspect_sessions', limit: 5, activeOnly: false });
+  assert.deepEqual(parseBridgeCommand('看看最近 Agent 在处理什么活'), { kind: 'inspect_sessions', limit: 5, activeOnly: true });
 
   assert.deepEqual(parseBridgeCommand('帅哥，帮我切换到 web 项目'), {
     kind: 'control',

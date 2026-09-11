@@ -41,6 +41,69 @@ test('limits and caches recent session listings', async () => {
   }
 });
 
+test('inspects active sessions without resuming or binding them', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-inspect-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const readCalls: string[] = [];
+  let resumeCalls = 0;
+  const fakeAppServer = {
+    cli: 'codex' as const,
+    onNotification: () => () => undefined,
+    listThreads: async () => [
+      {
+        id: 'active-thread',
+        cwd: directory,
+        preview: '修复 Windows 启动问题',
+        updatedAt: 1_700_000_300,
+        status: { type: 'active', activeFlags: ['running'] },
+      },
+      {
+        id: 'idle-thread',
+        cwd: directory,
+        preview: '已完成的旧任务',
+        updatedAt: 1_700_000_200,
+        status: { type: 'idle' },
+      },
+    ],
+    readThread: async (threadId: string) => {
+      readCalls.push(threadId);
+      return {
+        id: threadId,
+        cwd: directory,
+        status: threadId === 'active-thread' ? { type: 'active', activeFlags: ['running'] } : { type: 'idle' },
+        turns: threadId === 'active-thread'
+          ? [{
+            id: 'turn-1',
+            status: 'inProgress',
+            items: [{ type: 'commandExecution', command: 'npm test', status: 'inProgress' }],
+          }]
+          : [],
+      };
+    },
+    resumeThread: async () => {
+      resumeCalls += 1;
+      throw new Error('inspect must not resume a thread');
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    const result = await manager.inspect(5, true);
+    assert.deepEqual(readCalls, ['active-thread']);
+    assert.equal(resumeCalls, 0);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.summary.id, 'active-thread');
+    assert.equal(result[0]?.snapshot?.turns?.[0]?.items?.[0]?.type, 'commandExecution');
+    assert.equal(store.getBinding('user'), undefined);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('reuses an explicitly idle listed session without a duplicate thread read', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-known-idle-'));
   const store = new StateStore(path.join(directory, 'state.json'));

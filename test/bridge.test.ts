@@ -7,8 +7,8 @@ import { loadConfig } from '../src/config.js';
 import { BridgeApp } from '../src/bridge.js';
 import { ControlAgent } from '../src/control.js';
 import type { InboundMessage } from '../src/ilink.js';
-import type { SessionBinding } from '../src/model.js';
-import { SessionManager, SessionOccupiedError } from '../src/sessions.js';
+import type { SessionBinding, ThreadSnapshot } from '../src/model.js';
+import { SessionManager, SessionOccupiedError, type SessionInspection } from '../src/sessions.js';
 import { StateStore } from '../src/state.js';
 
 function message(text: string, id: string): InboundMessage {
@@ -187,6 +187,63 @@ test('lists recent sessions through the fast path and keeps numeric selection lo
     await bridge.handle(message('2', 'quick-select-1'));
     assert.deepEqual(used, ['target-thread']);
     assert.equal(store.getBinding('user')?.threadId, 'target-thread');
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('shows active Codex work through a read-only fast path', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-inspect-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  let controlRuns = 0;
+  const snapshot: ThreadSnapshot = {
+    id: 'active-thread',
+    cwd: directory,
+    updatedAt: 1_700_000_300,
+    status: { type: 'active', activeFlags: ['running'] },
+    turns: [{
+      id: 'turn-1',
+      status: 'inProgress',
+      items: [{ type: 'commandExecution', command: 'npm test', status: 'inProgress' }],
+    }],
+  };
+  const inspection: SessionInspection = {
+    summary: { id: 'active-thread', cwd: directory, preview: '修复 Windows 启动问题', updatedAt: 1_700_000_300, status: snapshot.status },
+    snapshot,
+  };
+  const fakeControl = {
+    run: async () => {
+      controlRuns += 1;
+      throw new Error('查看活动不应启动会话管理 Agent');
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    inspect: async (limit: number, activeOnly: boolean) => {
+      assert.equal(limit, 5);
+      assert.equal(activeOnly, true);
+      return [inspection];
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('查看活动', 'inspect-1'));
+    assert.equal(controlRuns, 0);
+    assert.match(sent.at(-1) || '', /当前活动 Codex 任务/);
+    assert.match(sent.at(-1) || '', /执行命令：npm test/);
+    assert.match(sent.at(-1) || '', /只读查看/);
+    assert.equal(store.getBinding('user'), undefined);
   } finally {
     await bridge.close();
     await store.save();
