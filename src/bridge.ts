@@ -1320,6 +1320,9 @@ function turnProgressKey(threadId: string, turnId: string): string {
 function controlErrorText(error: unknown): string {
   const message = errorMessage(error);
   if (/interrupt|signal/i.test(message)) return '会话管理 Agent 已中断。';
+  if (/Codex App Server (?:socket closed|connection (?:is )?closed)/i.test(message)) {
+    return 'Codex App Server 连接已断开，自动重连未成功；请再发送一次切换，或执行 wecode restart。';
+  }
   if (/no rollout found|thread not found/i.test(message)) return '会话管理 Agent 会话无法恢复；当前流程仍保留。';
   if (message.includes('reasoning_effort must not be empty') || message.includes('model_reasoning_effort')) {
     return '会话管理 Agent 配置无效：model_reasoning_effort 为空；请删除空配置或设置有效推理强度后重启。';
@@ -1335,6 +1338,9 @@ function controlErrorText(error: unknown): string {
 
 function userFacingError(error: unknown): string {
   const message = errorMessage(error);
+  if (/Codex App Server (?:socket closed|connection (?:is )?closed)/i.test(message)) {
+    return 'Codex App Server 连接已断开，自动重连未成功；请再发送一次切换，或执行 wecode restart。';
+  }
   if (/thread-store conflict|active writer|already in use|being used|occupied|locked|another client|其他 Codex 客户端|原生终端占用/i.test(message)) {
     return '目标会话被占用；回复“确认接管”，或先结束外部任务。';
   }

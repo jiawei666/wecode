@@ -53,6 +53,17 @@ async function endpointReady(endpoint: string): Promise<boolean> {
   }
 }
 
+const RECONNECTABLE_APP_SERVER_METHODS = new Set([
+  'thread/list',
+  'thread/read',
+  'thread/resume',
+]);
+
+function isClosedConnectionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Codex App Server (?:socket closed|connection (?:is )?closed)/i.test(message);
+}
+
 class JsonRpcConnection {
   private socket: WebSocket | null = null;
   private nextId = 1;
@@ -469,8 +480,26 @@ export class CodexAppServer {
   }
 
   private async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    if (!this.connection) throw new Error('Codex App Server is not connected');
-    return this.connection.request<T>(method, params);
+    const connection = this.connection;
+    if (!connection) throw new Error('Codex App Server is not connected');
+    try {
+      return await connection.request<T>(method, params);
+    } catch (error) {
+      // A stale WebSocket can close between the high-level operation's
+      // connect() call and its RPC request. These operations are safe to
+      // repeat and are required when restoring or selecting a session.
+      if (!RECONNECTABLE_APP_SERVER_METHODS.has(method) || !isClosedConnectionError(error)) throw error;
+      if (this.connection === connection) {
+        connection.close();
+        this.connection = null;
+      } else if (this.connection) {
+        throw error;
+      }
+      await this.connect();
+      const reconnected = this.connection as JsonRpcConnection | null;
+      if (!reconnected) throw new Error('Codex App Server 重连失败');
+      return reconnected.request<T>(method, params);
+    }
   }
 
   private async ensureProcess(): Promise<void> {
