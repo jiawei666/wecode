@@ -1053,13 +1053,14 @@ function formatSessionInspectionList(inspections: SessionInspection[], activeOnl
 
 function describeInspectionActivity(inspection: SessionInspection): string {
   const thread = inspection.snapshot ?? inspection.summary;
+  const currentlyRunning = inspectionThreadIsRunning(thread);
   const turn = latestInspectionTurn(inspection.snapshot);
   const item = latestInspectionItem(turn);
-  if (item) return describeInspectionItem(item);
+  if (item) return describeInspectionItem(item, currentlyRunning);
   if (turn?.status) return `turn ${formatInspectionItemStatus(turn.status).replace(/[（）]/gu, '') || turn.status}`;
   const preview = cleanActivityText(thread.preview || thread.name);
   if (preview) return truncateActivityText(preview);
-  return inspectionThreadIsRunning(thread)
+  return currentlyRunning
     ? '会话正在运行，暂未读到最新任务项'
     : '暂无可展示的任务详情';
 }
@@ -1074,11 +1075,11 @@ function latestInspectionItem(turn?: ThreadTurnSummary): ThreadItemSummary | und
   return [...items].reverse().find(isInspectionItemRunning) ?? items.at(-1);
 }
 
-function describeInspectionItem(item: ThreadItemSummary): string {
+function describeInspectionItem(item: ThreadItemSummary, currentlyRunning: boolean): string {
   const type = cleanActivityText(item.type)?.toLowerCase().replace(/[^a-z0-9]/gu, '') || '';
   const suffix = formatInspectionItemStatus(item.status);
-  if (type.includes('reasoning')) return `正在分析任务${suffix}`;
-  if (type.includes('contextcompaction')) return `正在整理会话上下文${suffix}`;
+  if (type.includes('reasoning')) return `${currentlyRunning ? '正在分析任务' : '已分析任务'}${suffix}`;
+  if (type.includes('contextcompaction')) return `${currentlyRunning ? '正在整理会话上下文' : '已整理会话上下文'}${suffix}`;
   if (type.includes('commandexecution')) {
     const command = cleanActivityText(item.command);
     return `执行命令${command ? `：${truncateActivityText(command, 160)}` : ''}${suffix}`;
@@ -1109,7 +1110,7 @@ function describeInspectionItem(item: ThreadItemSummary): string {
     const text = cleanActivityText(item.text);
     return `处理请求${text ? `：${truncateActivityText(text)}` : ''}${suffix}`;
   }
-  return `${type ? `处理 ${type}` : '正在处理任务'}${suffix}`;
+  return `${type ? `处理 ${type}` : currentlyRunning ? '正在处理任务' : '已处理任务'}${suffix}`;
 }
 
 function formatInspectionStatus(status?: ThreadSummary['status']): string {

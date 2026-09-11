@@ -251,6 +251,63 @@ test('shows active Codex work through a read-only fast path', async () => {
   }
 });
 
+test('uses completed wording for historical context compaction activity', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-inspect-history-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const snapshot: ThreadSnapshot = {
+    id: 'historical-thread',
+    cwd: directory,
+    updatedAt: 1_700_000_300,
+    status: { type: 'notLoaded' },
+    turns: [{
+      id: 'turn-1',
+      status: 'completed',
+      items: [{ type: 'contextCompaction', status: 'completed' }],
+    }],
+  };
+  const inspection: SessionInspection = {
+    summary: {
+      id: 'historical-thread',
+      cwd: directory,
+      preview: '历史会话',
+      updatedAt: 1_700_000_300,
+      status: snapshot.status,
+    },
+    snapshot,
+  };
+  const fakeControl = {
+    run: async () => { throw new Error('查看最近任务不应启动会话管理 Agent'); },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    inspect: async (limit: number, activeOnly: boolean) => {
+      assert.equal(limit, 5);
+      assert.equal(activeOnly, false);
+      return [inspection];
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('查看最近任务', 'inspect-history-1'));
+    assert.match(sent.at(-1) || '', /状态：未加载/);
+    assert.match(sent.at(-1) || '', /最近动作：已整理会话上下文（已完成）/);
+    assert.doesNotMatch(sent.at(-1) || '', /正在整理会话上下文/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('does not echo raw Agent output when control action parsing fails', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-control-error-'));
   const store = new StateStore(path.join(directory, 'state.json'));
