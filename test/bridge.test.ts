@@ -308,21 +308,11 @@ test('shows active Codex work through a read-only fast path', async () => {
   }
 });
 
-test('uses menu option 1 for read-only activity and recent task inspection', async () => {
+test('uses menu option 1 for recent task inspection', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-menu-inspect-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   const sent: string[] = [];
-  const active: SessionInspection = {
-    summary: { id: 'active-thread', cwd: directory, preview: '正在处理', updatedAt: 1_700_000_300, status: { type: 'active', activeFlags: ['running'] } },
-    snapshot: {
-      id: 'active-thread',
-      cwd: directory,
-      updatedAt: 1_700_000_300,
-      status: { type: 'active', activeFlags: ['running'] },
-      turns: [{ id: 'turn-1', status: 'inProgress', items: [{ type: 'commandExecution', command: 'npm test', status: 'inProgress' }] }],
-    },
-  };
   const recent: SessionInspection = {
     summary: { id: 'recent-thread', cwd: directory, preview: '最近任务', updatedAt: 1_700_000_200, status: { type: 'idle' } },
     snapshot: { id: 'recent-thread', cwd: directory, updatedAt: 1_700_000_200, status: { type: 'idle' }, turns: [] },
@@ -338,7 +328,7 @@ test('uses menu option 1 for read-only activity and recent task inspection', asy
   const fakeSessions = {
     inspect: async (_limit: number, activeOnly: boolean) => {
       inspectModes.push(activeOnly);
-      return activeOnly ? [active] : [recent];
+      return [recent];
     },
     close: async () => undefined,
   } as unknown as SessionManager;
@@ -348,9 +338,8 @@ test('uses menu option 1 for read-only activity and recent task inspection', asy
 
   try {
     await bridge.handle(message('1', 'menu-inspect-1'));
-    assert.deepEqual(inspectModes, [true, false]);
+    assert.deepEqual(inspectModes, [false]);
     assert.equal(sent.length, 2, JSON.stringify(sent));
-    assert.match(sent.at(-1) || '', /当前活动 Codex 任务/);
     assert.match(sent.at(-1) || '', /最近 Codex 任务/);
     assert.equal(store.getBinding('user'), undefined);
   } finally {

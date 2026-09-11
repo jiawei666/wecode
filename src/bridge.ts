@@ -210,7 +210,7 @@ export class BridgeApp {
     }
     if (!command && !this.quickSessionLists.has(userId)) {
       if (text === '1') {
-        await this.inspectTaskOverview(userId);
+        await this.inspectSessions(userId, 5, false);
         return;
       }
       if (text === '2') {
@@ -280,16 +280,6 @@ export class BridgeApp {
     await this.reply(userId, activeOnly ? '正在读取活动任务（只读）……' : '正在读取最近任务（只读）……');
     const inspections = await this.sessions.inspect(limit, activeOnly);
     await this.reply(userId, formatSessionInspectionList(inspections, activeOnly));
-  }
-
-  private async inspectTaskOverview(userId: string): Promise<void> {
-    await this.reply(userId, '正在读取活动任务和最近任务（只读）……');
-    const active = await this.sessions.inspect(5, true);
-    const recent = await this.sessions.inspect(5, false);
-    await this.reply(
-      userId,
-      `${formatSessionInspectionList(active, true)}\n\n${formatSessionInspectionList(recent, false)}`,
-    );
   }
 
   private takeQuickSessionSelection(userId: string, text: string): ThreadSummary | undefined {
