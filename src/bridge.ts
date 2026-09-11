@@ -1083,16 +1083,11 @@ export class BridgeApp {
 
 function formatQuickSessionList(sessions: ThreadSummary[]): string {
   if (!sessions.length) return '没有找到历史 Codex 会话。';
-  const rows = sessions.map((thread, index) => (
-    String(index + 1)
-      + '. **'
-      + sessionDisplayName(thread)
-      + '** — '
-      + sessionPreview(thread)
-      + '（'
-      + formatTimestamp(thread.updatedAt)
-      + '）'
-  ));
+  const rows = sessions.map((thread, index) => [
+    `${index + 1}. **${sessionDisplayName(thread)}** — ${sessionPreview(thread)}`,
+    '',
+    `更新时间：${formatTimestamp(thread.updatedAt)}`,
+  ].join('\n'));
   return rows.join('\n') + '\n\n回复序号即可切换（10 分钟内）。';
 }
 
@@ -1111,6 +1106,7 @@ function formatSessionInspectionList(inspections: SessionInspection[], activeOnl
       `${index + 1}. **${sessionDisplayName(thread)}**`,
       ...(status ? [`状态：${status}`] : []),
       `${actionLabel}：${describeInspectionActivity(inspection)}`,
+      '',
       `更新时间：${formatTimestamp(inspection.summary.updatedAt ?? inspection.snapshot?.updatedAt)}`,
     ].join('\n');
   });

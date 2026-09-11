@@ -191,7 +191,7 @@ test('lists recent sessions through the fast path and keeps numeric selection lo
     await bridge.handle(message('列出最近 5 个会话', 'quick-list-2'));
     assert.equal(controlRuns, 0);
     assert.deepEqual(listLimits, [5]);
-    assert.match(sent.at(-1) || '', /2\. \*\*target-project\*\* — 目标会话（/);
+    assert.match(sent.at(-1) || '', /2\. \*\*target-project\*\* — 目标会话\n\n更新时间：/);
     assert.match(sent.at(-1) || '', /回复序号即可切换/);
 
     await bridge.handle(message('2', 'quick-select-1'));
@@ -399,6 +399,7 @@ test('uses completed wording for historical context compaction activity', async 
     assert.doesNotMatch(sent.at(-1) || '', /未加载/);
     assert.doesNotMatch(sent.at(-1) || '', /状态：/);
     assert.match(sent.at(-1) || '', /最近动作：已整理会话上下文（已完成）/);
+    assert.match(sent.at(-1) || '', /最近动作：已整理会话上下文（已完成）\n\n更新时间：/);
     assert.doesNotMatch(sent.at(-1) || '', /正在整理会话上下文/);
   } finally {
     await bridge.close();
