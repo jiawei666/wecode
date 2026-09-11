@@ -1087,7 +1087,7 @@ export class BridgeApp {
 function formatQuickSessionList(sessions: ThreadSummary[]): string {
   if (!sessions.length) return '没有找到历史 Codex 会话。';
   const rows = sessions.map((thread, index) => [
-    `${index + 1}. **${sessionDisplayName(thread)}** — ${sessionPreview(thread)}`,
+    `${index + 1}. **${sessionDisplayLabel(thread)}** — ${sessionPreview(thread)}`,
     '',
     `更新时间：${formatTimestamp(thread.updatedAt)}`,
   ].join('\n'));
@@ -1112,7 +1112,7 @@ function formatSessionInspectionList(inspections: SessionInspection[], activeOnl
     const statusType = cleanActivityText(thread.status?.type)?.toLowerCase();
     const status = statusType === 'notloaded' ? undefined : formatInspectionStatus(thread.status);
     return [
-      `${index + 1}. **${sessionDisplayName(thread)}**`,
+      `${index + 1}. **${sessionDisplayLabel(thread)}**`,
       ...(status ? [`状态：${status}`] : []),
       `${actionLabel}：${describeInspectionActivity(inspection)}`,
       '',
@@ -1261,13 +1261,25 @@ function truncateActivityText(value: string, maxLength = 180): string {
   return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
+function sessionProjectName(thread: ThreadSummary): string | undefined {
+  const cwd = thread.cwd?.trim().replace(/[\\/]+$/u, '');
+  const directory = cwd?.split(/[\\/]/u).at(-1);
+  return cleanActivityText(directory);
+}
+
 function sessionDisplayName(thread: ThreadSummary): string {
   const name = cleanActivityText(thread.name);
   if (name) return truncateActivityText(name, 120);
+  return sessionProjectName(thread) || '未命名会话';
+}
 
-  const cwd = thread.cwd?.trim().replace(/[\\/]+$/u, '');
-  const directory = cwd?.split(/[\\/]/u).at(-1);
-  return directory || '未命名会话';
+function sessionDisplayLabel(thread: ThreadSummary): string {
+  const project = sessionProjectName(thread);
+  const name = cleanActivityText(thread.name);
+  if (project && name && project !== name) {
+    return `${truncateActivityText(project, 80)} | ${truncateActivityText(name, 120)}`;
+  }
+  return sessionDisplayName(thread);
 }
 
 function sessionPreview(thread: ThreadSummary): string {
