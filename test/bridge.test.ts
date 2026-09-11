@@ -540,6 +540,53 @@ test('loads the native session catalog only for an explicit session lookup', asy
   }
 });
 
+test('refreshes the catalog for repeated session lookups in management mode', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-refresh-catalog-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  store.setControl('user', { sessionId: 'control-thread', startedAt: Date.now(), lastActivityAt: Date.now() });
+  const sent: string[] = [];
+  const prompts: string[] = [];
+  let catalogCalls = 0;
+  let controlRuns = 0;
+  const fakeControl = {
+    run: async (_userId: string, prompt: string) => {
+      prompts.push(prompt);
+      controlRuns += 1;
+      return controlRuns === 1
+        ? { action: { action: 'request_catalog' as const }, sessionId: 'control-thread' }
+        : { action: { action: 'reply' as const, text: '已刷新会话列表。' }, sessionId: 'control-thread' };
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    list: async () => {
+      catalogCalls += 1;
+      return [{ id: 'fresh-thread', cwd: directory, preview: '最新未归档会话', updatedAt: 1_700_000_400, cli: 'codex' as const }];
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('帅哥，帮我查找最近的会话', 'refresh-catalog-1'));
+    assert.equal(catalogCalls, 1);
+    assert.equal(controlRuns, 2);
+    assert.match(prompts[0] || '', /禁止复用上一轮 catalog/);
+    assert.match(prompts[1] || '', /fresh-thread/);
+    assert.match(sent.at(-1) || '', /已刷新会话列表/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('automatically enters session management when the current session is stale', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-stale-session-'));
   const store = new StateStore(path.join(directory, 'state.json'));

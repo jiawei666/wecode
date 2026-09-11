@@ -337,9 +337,11 @@ export class BridgeApp {
     const pendingTakeover = control.pendingTakeover
       ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先通过 Codex App Server 中断活动 turn；Windows 若仍有外部客户端持有该 thread 锁，不会强制关闭客户端，接管失败时会自动尝试分叉新会话。`
       : '';
-    const catalogState = control.sessionId
-      ? '本轮未重新加载原生会话 catalog；如果之前的会话管理对话中已有适用 catalog，可以继续使用；否则返回 request_catalog。'
-      : '当前尚未加载原生会话 catalog；如果本条请求需要历史会话，请返回 request_catalog。';
+    const catalogState = shouldRefreshSessionCatalog(text)
+      ? '当前尚未加载原生会话 catalog；本条请求明确需要最新历史会话列表，请返回 request_catalog，禁止复用上一轮 catalog。'
+      : control.sessionId
+        ? '本轮未重新加载原生会话 catalog；如果之前的会话管理对话中已有适用 catalog，可以继续使用；否则返回 request_catalog。'
+        : '当前尚未加载原生会话 catalog；如果本条请求需要历史会话，请返回 request_catalog。';
     const makePrompt = (catalog: string): string => `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
     const prompt = makePrompt(catalogState);
 
@@ -1090,6 +1092,12 @@ function formatQuickSessionList(sessions: ThreadSummary[]): string {
     `更新时间：${formatTimestamp(thread.updatedAt)}`,
   ].join('\n'));
   return rows.join('\n') + '\n\n回复序号即可切换（10 分钟内）。';
+}
+
+function shouldRefreshSessionCatalog(text: string): boolean {
+  const value = text.trim();
+  if (!value || /^(?:第\s*\d+\s*个?|(?:刚才|上一个|最上面|第一个|最后一个)(?:那个|会话)?)$/u.test(value)) return false;
+  return /(?:列出|查找|搜索|检索|查看|查询|切换|恢复|选择|分叉|复制).*(?:会话|任务)|(?:会话|任务).*(?:列出|查找|搜索|检索|查看|查询|切换|恢复|选择|分叉|复制)/u.test(value);
 }
 
 function formatSessionInspectionList(inspections: SessionInspection[], activeOnly: boolean): string {
