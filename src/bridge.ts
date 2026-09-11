@@ -319,7 +319,8 @@ export class BridgeApp {
       if (sent && welcomePending) this.markWelcomeSent();
     }
     if (!text.trim()) {
-      await this.reply(userId, '请描述要查找、新建或切换的会话。', { source: 'control' });
+      this.quickSessionLists.delete(userId);
+      await this.reply(userId, QUICK_GUIDE_TEXT, { source: 'control' });
       return;
     }
 

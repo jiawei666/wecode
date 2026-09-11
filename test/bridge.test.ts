@@ -56,6 +56,28 @@ test('does not send an automatic first-run guide before explicit help', async ()
   }
 });
 
+test('shows the quick guide when the wake word is sent without a request', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-wake-guide-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const fakeSessions = { close: async () => undefined } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions);
+
+  try {
+    await bridge.handle(message('帅哥', 'wake-guide-1'));
+    assert.match(sent.at(-1) || '', /^> \*\*会话管理 Agent\*\*\n\n我可以帮你：/);
+    assert.match(sent.at(-1) || '', /1\. 查看最近任务/);
+    assert.doesNotMatch(sent.at(-1) || '', /请描述要查找/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('sends the post-login welcome once and merges it with automatic management', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-welcome-'));
   const store = new StateStore(path.join(directory, 'state.json'));
