@@ -51,7 +51,7 @@ async function readVersion(command: string): Promise<string> {
       '/d',
       '/s',
       '/c',
-      buildWindowsCommandLine(command, ['--version']),
+      `"${buildWindowsCommandLine(command, ['--version'])}"`,
     ], { timeout: 5_000, maxBuffer: 32_000, windowsHide: true, windowsVerbatimArguments: true })
     : await execFile(command, ['--version'], { timeout: 5_000, maxBuffer: 32_000, windowsHide: true });
   const version = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/u).find(Boolean)?.trim();

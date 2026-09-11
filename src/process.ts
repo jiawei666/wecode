@@ -4,7 +4,10 @@ export function spawnCodex(command: string, args: string[], options: SpawnOption
   if (process.platform !== 'win32') return spawn(command, args, options);
 
   const comSpec = process.env.ComSpec || process.env.COMSPEC || 'cmd.exe';
-  const commandLine = buildWindowsCommandLine(command, args);
+  // `/c` strips the first and last quote from its command string. Wrap the
+  // complete command once more so executable paths containing spaces keep
+  // their inner quotes when Node passes the argument verbatim to cmd.exe.
+  const commandLine = `"${buildWindowsCommandLine(command, args)}"`;
   return spawn(comSpec, ['/d', '/s', '/c', commandLine], {
     ...options,
     windowsVerbatimArguments: true,
