@@ -177,6 +177,7 @@ export class BridgeApp {
       return;
     }
     if (command?.kind === 'guide') {
+      this.quickSessionLists.delete(userId);
       await this.reply(userId, QUICK_GUIDE_TEXT);
       return;
     }
@@ -207,9 +208,31 @@ export class BridgeApp {
       await this.switchToQuickSession(userId, selected);
       return;
     }
-    if (!command && text === '5' && !this.quickSessionLists.has(userId)) {
-      await this.listSessions(userId, 5);
-      return;
+    if (!command && !this.quickSessionLists.has(userId)) {
+      if (text === '1') {
+        await this.inspectTaskOverview(userId);
+        return;
+      }
+      if (text === '2') {
+        await this.sendStatus(userId);
+        return;
+      }
+      if (text === '3') {
+        await this.handleControl(userId, '新建会话');
+        return;
+      }
+      if (text === '4') {
+        await this.handleControl(userId, '切换会话');
+        return;
+      }
+      if (text === '5') {
+        await this.listSessions(userId, 5);
+        return;
+      }
+      if (text === '6') {
+        await this.forkCurrent(userId);
+        return;
+      }
     }
 
     if (this.store.getControl(userId)) {
@@ -257,6 +280,16 @@ export class BridgeApp {
     await this.reply(userId, activeOnly ? '正在读取活动任务（只读）……' : '正在读取最近任务（只读）……');
     const inspections = await this.sessions.inspect(limit, activeOnly);
     await this.reply(userId, formatSessionInspectionList(inspections, activeOnly));
+  }
+
+  private async inspectTaskOverview(userId: string): Promise<void> {
+    await this.reply(userId, '正在读取活动任务和最近任务（只读）……');
+    const active = await this.sessions.inspect(5, true);
+    const recent = await this.sessions.inspect(5, false);
+    await this.reply(
+      userId,
+      `${formatSessionInspectionList(active, true)}\n\n${formatSessionInspectionList(recent, false)}`,
+    );
   }
 
   private takeQuickSessionSelection(userId: string, text: string): ThreadSummary | undefined {
