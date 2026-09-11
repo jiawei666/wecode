@@ -198,6 +198,53 @@ test('lists recent sessions through the fast path and keeps numeric selection lo
   }
 });
 
+test('switches by numeric selection even when session management mode is active', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-quick-select-control-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  store.setControl('user', { sessionId: 'control-thread', startedAt: Date.now(), lastActivityAt: Date.now() });
+  const sent: string[] = [];
+  const target = { id: 'target-thread', cwd: directory, preview: '目标会话', updatedAt: 1_700_000_300, cli: 'codex' as const };
+  const binding: SessionBinding = {
+    threadId: target.id,
+    cwd: target.cwd,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  const fakeControl = {
+    run: async () => { throw new Error('数字选择不应调用会话管理 Agent'); },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    list: async () => [target],
+    status: async () => ({ running: false }),
+    use: async () => {
+      store.setBinding('user', binding);
+      return { binding };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('列出最近 1 个会话', 'quick-control-list-1'));
+    await bridge.handle(message('1', 'quick-control-select-1'));
+    assert.match(sent.at(-1) || '', /已切换会话/);
+    assert.equal(store.getBinding('user')?.threadId, target.id);
+    assert.equal(store.getControl('user'), undefined);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('shows active Codex work through a read-only fast path', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-inspect-'));
   const store = new StateStore(path.join(directory, 'state.json'));

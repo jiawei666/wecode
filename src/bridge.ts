@@ -36,7 +36,7 @@ const TURN_PROGRESS_FLUSH_DELAY_MS = 3_000;
 const TURN_PROGRESS_FLUSH_LENGTH = 900;
 const CONTROL_PROGRESS_DELAY_MS = 1_500;
 const QUICK_SESSION_LIST_LIMIT = 20;
-const QUICK_SESSION_LIST_TTL_MS = 10_000;
+const QUICK_SESSION_LIST_TTL_MS = 10 * 60_000;
 
 interface QuickSessionList {
   expiresAt: number;
@@ -198,12 +198,10 @@ export class BridgeApp {
       return;
     }
 
-    if (!this.store.getControl(userId)) {
-      const selected = this.takeQuickSessionSelection(userId, text);
-      if (selected) {
-        await this.switchToQuickSession(userId, selected);
-        return;
-      }
+    const selected = this.takeQuickSessionSelection(userId, text);
+    if (selected) {
+      await this.switchToQuickSession(userId, selected);
+      return;
     }
 
     if (this.store.getControl(userId)) {
@@ -268,6 +266,10 @@ export class BridgeApp {
 
   private async switchToQuickSession(userId: string, thread: ThreadSummary): Promise<void> {
     this.quickSessionLists.delete(userId);
+    if (this.store.getControl(userId)) {
+      await this.controlAgent.interrupt(userId).catch(() => false);
+      this.store.clearControl(userId);
+    }
     await this.reply(userId, '正在恢复会话……');
     await this.stopBeforeSwitch(userId);
     const result = await this.sessions.use(userId, thread.id, thread.cwd, launchOptions(thread), false, thread);
