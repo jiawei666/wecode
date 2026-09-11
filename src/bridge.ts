@@ -1,5 +1,5 @@
 import type { AppConfig } from './config.js';
-import { HELP_TEXT, SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
+import { HELP_TEXT, QUICK_GUIDE_TEXT, SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
 import { ControlAgent } from './control.js';
 import type { InboundMessage, IlinkClient } from './ilink.js';
 import type {
@@ -174,6 +174,10 @@ export class BridgeApp {
     }
     if (command?.kind === 'fork') {
       await this.forkCurrent(userId);
+      return;
+    }
+    if (command?.kind === 'guide') {
+      await this.reply(userId, QUICK_GUIDE_TEXT);
       return;
     }
 

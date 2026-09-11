@@ -6,6 +6,7 @@ export type BridgeCommand =
   | { kind: 'stop' }
   | { kind: 'fork' }
   | { kind: 'exit' }
+  | { kind: 'guide' }
   | { kind: 'help' };
 
 export const CONTROL_WAKE_WORDS = ['帅哥', '靓仔', '小哥哥', '哥哥', '大哥', '老哥'] as const;
@@ -25,6 +26,9 @@ export function parseBridgeCommand(input: string): BridgeCommand | null {
 function parsePlainCommand(input: string): BridgeCommand | null {
   const activity = parseActivityCommand(input);
   if (activity) return activity;
+  if (/^(?:你好|您好|嗨|哈喽|hello|hi|有哪些功能|你能做什么)[！!，,。\.\s～~]*$/iu.test(input)) {
+    return { kind: 'guide' };
+  }
   if (input === '会话列表') return { kind: 'list_sessions', limit: 20 };
   const listMatch = /^(?:列出|查看)\s*(?:最近\s*)?(?:的\s*)?(?:(\d+)\s*个\s*)?会话$/u.exec(input);
   if (listMatch) {
@@ -97,6 +101,15 @@ export const FIRST_RUN_GUIDE = `👋 欢迎使用 wecode！
 export const STARTUP_HINT = `唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}；例如“帅哥，帮我查找项目最新的 5 个会话”。查看活动、查看最近任务、状态、停止、分叉、退出、帮助可直接使用。`;
 
 export const WELCOME_TEXT = '👋 欢迎使用 wecode！\n\n💬 直接发送任务即可。';
+
+export const QUICK_GUIDE_TEXT = `我可以帮你：
+• 新建、切换、列出、分叉 Codex 会话
+• 查看活动任务和最近任务（只读）
+• 查看状态、停止任务、退出会话
+
+开始：发送“新建会话”或“切换会话”。
+列出会话后，回复“1”“2”或“第 2 个”即可切换。
+发送“帮助”查看完整说明。`;
 
 export const HELP_TEXT = `主要入口：
 唤醒词（任选一个）：${CONTROL_WAKE_WORDS_TEXT}

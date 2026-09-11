@@ -11,6 +11,7 @@ test('allows explicit local maintenance mode without resetting the control sessi
   assert.match(instructions, /action=reply/);
   assert.match(instructions, /查看最近任务/);
   assert.match(instructions, /只读查看/);
+  assert.match(instructions, /不要写成长段/);
 });
 
 test('keeps the control schema within Codex structured-output support', async () => {

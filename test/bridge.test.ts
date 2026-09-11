@@ -43,6 +43,11 @@ test('does not send an automatic first-run guide before explicit help', async ()
 
     await bridge.handle(message('帮助', 'help-2'));
     assert.equal(sent.length, 2);
+
+    await bridge.handle(message('你好', 'guide-1'));
+    assert.match(sent.at(-1) || '', /我可以帮你/);
+    assert.match(sent.at(-1) || '', /列出会话后，回复“1”“2”/);
+    assert.doesNotMatch(sent.at(-1) || '', /> \*\*会话管理 Agent\*\*/);
   } finally {
     await bridge.close();
     await store.save();
