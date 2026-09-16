@@ -940,6 +940,74 @@ test('steers the active Codex turn before falling back to the queue', async () =
   }
 });
 
+test('forwards WeChat images and file paths to Codex and keeps attachments in the queue', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-media-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const turns: Array<{ text: string; images: string[] }> = [];
+  let running = false;
+  const binding: SessionBinding = {
+    threadId: 'media-thread',
+    cwd: directory,
+    cli: 'codex',
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  store.setBinding('user', binding);
+  const fakeControl = {
+    run: async () => { throw new Error('Session-management Agent should not receive attachment turns'); },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    status: async () => ({ binding: store.getBinding('user'), running }),
+    steer: async () => ({ accepted: false }),
+    send: async (_userId: string, text: string, images: string[] = []) => {
+      turns.push({ text, images });
+      running = true;
+      return { accepted: true };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('先准备好', 'media-first'));
+    const mediaMessage = {
+      ...message('请查看这张图并读取这份报告', 'media-second'),
+      attachments: [
+        { kind: 'image' as const, name: '工位.png', path: path.join(directory, 'image.png') },
+        { kind: 'file' as const, name: '报告.pdf', path: path.join(directory, 'report.pdf') },
+      ],
+    };
+    await bridge.handle(mediaMessage);
+    assert.match(sent.at(-1) || '', /已排队 1 条/);
+
+    running = false;
+    await bridge.onTurn({
+      threadId: binding.threadId,
+      turnId: 'turn-1',
+      text: '第一条已完成',
+      status: 'completed',
+    });
+
+    assert.equal(turns.length, 2);
+    assert.equal(turns[1]?.text.startsWith('请查看这张图并读取这份报告'), true);
+    assert.match(turns[1]?.text || '', /报告\.pdf/);
+    assert.ok(turns[1]?.text.includes(path.join(directory, 'report.pdf')));
+    assert.deepEqual(turns[1]?.images, [path.join(directory, 'image.png')]);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('lets the session-management Agent format lists and resolve a natural-language selection', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-list-'));
   const store = new StateStore(path.join(directory, 'state.json'));

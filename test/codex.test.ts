@@ -102,12 +102,19 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
     assert.equal(readParams?.threadId, 'test-thread');
     assert.equal(readParams?.includeTurns, true);
     assert.equal(snapshot.turns?.[0]?.id, 'turn-1');
-    assert.equal(await appServer.startTurn('test-thread', '/workspace/project', '生成报告'), 'turn-1');
+    assert.equal(await appServer.startTurn('test-thread', '/workspace/project', '看看这张图', {}, ['/tmp/wecode-image.jpg']), 'turn-1');
+    assert.deepEqual(turnParams?.input, [
+      { type: 'text', text: '看看这张图' },
+      { type: 'localImage', path: '/tmp/wecode-image.jpg' },
+    ]);
     assert.equal(turnParams?.summary, 'detailed');
-    assert.equal(await appServer.steerTurn('test-thread', 'turn-1', '补充要求'), 'turn-1');
+    assert.equal(await appServer.steerTurn('test-thread', 'turn-1', '补充要求', ['/tmp/wecode-image-2.png']), 'turn-1');
     assert.equal(steerParams?.threadId, 'test-thread');
     assert.equal(steerParams?.expectedTurnId, 'turn-1');
-    assert.deepEqual(steerParams?.input, [{ type: 'text', text: '补充要求' }]);
+    assert.deepEqual(steerParams?.input, [
+      { type: 'text', text: '补充要求' },
+      { type: 'localImage', path: '/tmp/wecode-image-2.png' },
+    ]);
   } finally {
     await appServer.close();
     await new Promise<void>((resolve) => websocketServer.close(() => resolve()));

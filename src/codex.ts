@@ -460,12 +460,21 @@ export class CodexAppServer {
     return threads;
   }
 
-  async startTurn(threadId: string, cwd: string, text: string, options: SessionLaunchOptions = {}): Promise<string> {
+  async startTurn(
+    threadId: string,
+    cwd: string,
+    text: string,
+    options: SessionLaunchOptions = {},
+    imagePaths: string[] = [],
+  ): Promise<string> {
     await this.connect();
     const fast = options.fast ?? this.config.codexFast;
     const params: Record<string, unknown> = {
       threadId,
-      input: [{ type: 'text', text }],
+      input: [
+        { type: 'text', text },
+        ...imagePaths.map((imagePath) => ({ type: 'localImage', path: imagePath })),
+      ],
       cwd,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
@@ -480,11 +489,14 @@ export class CodexAppServer {
     return turnId;
   }
 
-  async steerTurn(threadId: string, turnId: string, text: string): Promise<string> {
+  async steerTurn(threadId: string, turnId: string, text: string, imagePaths: string[] = []): Promise<string> {
     await this.connect();
     const result = await this.request<{ turnId?: string }>('turn/steer', {
       threadId,
-      input: [{ type: 'text', text }],
+      input: [
+        { type: 'text', text },
+        ...imagePaths.map((imagePath) => ({ type: 'localImage', path: imagePath })),
+      ],
       expectedTurnId: turnId,
     });
     return result.turnId || turnId;

@@ -147,6 +147,7 @@ test('reuses an explicitly idle listed session without a duplicate thread read',
 test('starts a fresh thread turn through the App Server', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-'));
   const events: string[] = [];
+  let forwardedImages: string[] = [];
   const fakeAppServer = {
     onNotification: () => () => undefined,
     startThread: async () => {
@@ -157,8 +158,9 @@ test('starts a fresh thread turn through the App Server', async () => {
       events.push('resume');
       throw new Error('no rollout found');
     },
-    startTurn: async () => {
+    startTurn: async (_threadId: string, _cwd: string, _text: string, _options: unknown, imagePaths: string[] = []) => {
       events.push('turn');
+      forwardedImages = imagePaths;
       return 'turn-1';
     },
     close: async () => undefined,
@@ -170,8 +172,9 @@ test('starts a fresh thread turn through the App Server', async () => {
   try {
     await manager.create('user');
     assert.deepEqual(events, ['thread']);
-    await manager.send('user', '你现在是什么模型');
+    await manager.send('user', '请查看图片', [path.join(directory, 'photo.png')]);
     assert.deepEqual(events, ['thread', 'turn']);
+    assert.deepEqual(forwardedImages, [path.join(directory, 'photo.png')]);
   } finally {
     await manager.close();
     await store.save();

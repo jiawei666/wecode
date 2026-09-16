@@ -218,7 +218,7 @@ export class SessionManager {
     return value;
   }
 
-  async send(userId: string, text: string): Promise<{ accepted: boolean }> {
+  async send(userId: string, text: string, imagePaths: string[] = []): Promise<{ accepted: boolean }> {
     const binding = this.store.getBinding(userId);
     if (!binding) return { accepted: false };
     const fresh = binding.hasRollout === false;
@@ -234,7 +234,7 @@ export class SessionManager {
     let activeBinding = binding;
     let turnId: string;
     try {
-      turnId = await this.appServer.startTurn(activeBinding.threadId, activeBinding.cwd, text, activeBinding);
+      turnId = await this.appServer.startTurn(activeBinding.threadId, activeBinding.cwd, text, activeBinding, imagePaths);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!fresh || !/thread not found/i.test(message)) throw error;
@@ -245,7 +245,7 @@ export class SessionManager {
       const thread = await this.appServer.startThread(binding.cwd, binding);
       activeBinding = this.makeBinding(thread, binding.cwd, binding, false, binding);
       this.bind(userId, activeBinding);
-      turnId = await this.appServer.startTurn(activeBinding.threadId, activeBinding.cwd, text, activeBinding);
+      turnId = await this.appServer.startTurn(activeBinding.threadId, activeBinding.cwd, text, activeBinding, imagePaths);
     }
     if (!this.activeTurns.has(turnId) && !this.completedTurns.has(turnId)) {
       this.activeTurns.set(turnId, {
@@ -269,12 +269,12 @@ export class SessionManager {
     return { accepted: true };
   }
 
-  async steer(userId: string, text: string): Promise<{ accepted: boolean }> {
+  async steer(userId: string, text: string, imagePaths: string[] = []): Promise<{ accepted: boolean }> {
     const binding = this.store.getBinding(userId);
     if (!binding) return { accepted: false };
     const active = [...this.activeTurns.values()].find((turn) => turn.threadId === binding.threadId);
     if (!active) return { accepted: false };
-    await this.appServer.steerTurn(active.threadId, active.turnId, text);
+    await this.appServer.steerTurn(active.threadId, active.turnId, text, imagePaths);
     return { accepted: true };
   }
 

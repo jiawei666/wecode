@@ -23,8 +23,8 @@ export interface SessionAdapter {
   releaseExternalWriter?(threadId: string, options?: { force?: boolean }): Promise<ExternalWriterRelease>;
   readThread(threadId: string): Promise<ThreadSnapshot>;
   listThreads(cwd?: string, limit?: number): Promise<ThreadSummary[]>;
-  startTurn(threadId: string, cwd: string, text: string, options?: SessionLaunchOptions): Promise<string>;
-  steerTurn(threadId: string, turnId: string, text: string): Promise<string>;
+  startTurn(threadId: string, cwd: string, text: string, options?: SessionLaunchOptions, imagePaths?: string[]): Promise<string>;
+  steerTurn(threadId: string, turnId: string, text: string, imagePaths?: string[]): Promise<string>;
   interrupt(threadId: string, turnId: string): Promise<void>;
   unsubscribe(threadId: string): Promise<void>;
   close(): Promise<void>;

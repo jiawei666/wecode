@@ -1,7 +1,7 @@
 import type { AppConfig } from './config.js';
 import { HELP_TEXT, QUICK_GUIDE_TEXT, SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
 import { ControlAgent } from './control.js';
-import type { InboundMessage, IlinkClient } from './ilink.js';
+import type { InboundAttachment, InboundMessage, IlinkClient } from './ilink.js';
 import type {
   ActionResponse,
   ControlState,
@@ -44,11 +44,42 @@ interface QuickSessionList {
   sessions: ThreadSummary[];
 }
 
+interface PendingCodexTurn {
+  text: string;
+  imagePaths: string[];
+}
+
+function codexTurnForMessage(text: string, attachments: InboundAttachment[]): PendingCodexTurn {
+  const usable = attachments.filter((attachment) =>
+    (attachment.kind === 'image' || attachment.kind === 'file') && attachment.path,
+  );
+  const imagePaths = usable
+    .filter((attachment) => attachment.kind === 'image')
+    .flatMap((attachment) => attachment.path ? [attachment.path] : []);
+  const lines = usable.map((attachment) => attachment.kind === 'image'
+    ? `- 图片：${attachment.name}（已附加图片）`
+    : `- 文件：${attachment.name}\n  本地路径：${attachment.path}`);
+  const unsupported = attachments.filter((attachment) => !usable.includes(attachment));
+  for (const attachment of unsupported) {
+    const reason = attachment.error || (attachment.kind === 'image' || attachment.kind === 'file'
+      ? '下载失败'
+      : '暂不支持此类附件');
+    lines.push(`- ${attachment.kind}：${attachment.name}（${reason}）`);
+  }
+  const intro = text.trim() || (usable.some((attachment) => attachment.kind === 'image')
+    ? '请查看并处理我通过微信发送的图片。'
+    : '请读取并处理我通过微信发送的文件。');
+  const prompt = lines.length
+    ? `${intro}\n\n[微信附件]\n${lines.join('\n')}`
+    : intro;
+  return { text: prompt, imagePaths };
+}
+
 export class BridgeApp {
   private readonly controlAgent: ControlAgent;
   private readonly pages: PagePublisher;
   private readonly sessions: SessionManager;
-  private readonly queued = new Map<string, string[]>();
+  private readonly queued = new Map<string, PendingCodexTurn[]>();
   private readonly draining = new Set<string>();
   private readonly handling = new Map<string, Promise<void>>();
   private readonly directHandling = new Map<string, Promise<void>>();
@@ -149,9 +180,9 @@ export class BridgeApp {
     if (this.store.seen(`${userId}|${message.messageId}|${message.timeMs}`)) return;
 
     const text = message.text.trim();
-    if (!text) {
+    const attachments = message.attachments;
+    if (!text && attachments.length === 0) {
       await this.sendPendingWelcome(userId);
-      if (message.attachments.length) await this.reply(userId, `收到 ${message.attachments.length} 个附件；当前只处理文字。`);
       return;
     }
 
@@ -198,7 +229,7 @@ export class BridgeApp {
       await this.inspectSessions(userId, command.limit, command.activeOnly);
       return;
     }
-    if (command?.kind === 'control') {
+    if (command?.kind === 'control' && attachments.length === 0) {
       await this.handleControl(userId, command.text);
       return;
     }
@@ -235,12 +266,33 @@ export class BridgeApp {
       }
     }
 
+    const binding = this.store.getBinding(userId);
+    if (attachments.length) {
+      const turn = codexTurnForMessage(command?.kind === 'control' ? command.text : text, attachments);
+      const hasForwardableAttachment = attachments.some((attachment) =>
+        (attachment.kind === 'image' || attachment.kind === 'file') && attachment.path,
+      );
+      if (!hasForwardableAttachment) {
+        await this.reply(userId, '目前只支持转发图片和文件；附件下载失败时请重新发送。');
+        return;
+      }
+      if (!binding) {
+        await this.reply(userId, '当前没有绑定的 Codex 会话，无法转发附件。请先新建或切换到一个会话，再重新发送图片或文件。');
+        return;
+      }
+      const failed = attachments.filter((attachment) => !attachment.path || (attachment.kind !== 'image' && attachment.kind !== 'file'));
+      if (failed.length) {
+        await this.reply(userId, `有 ${failed.length} 个附件未能转发：${failed.map((attachment) => `${attachment.name}（${attachment.error || '暂不支持此类附件'}）`).join('、')}`);
+      }
+      await this.sendToTarget(userId, turn.text, turn.imagePaths);
+      return;
+    }
+
     if (this.store.getControl(userId)) {
       await this.handleControl(userId, text);
       return;
     }
 
-    const binding = this.store.getBinding(userId);
     if (!binding && !this.store.getControl(userId) && looksLikeSkillDocument(text)) {
       await this.reply(
         userId,
@@ -549,12 +601,13 @@ export class BridgeApp {
     await this.reply(userId, this.forkedText(result.binding));
   }
 
-  private async sendToTarget(userId: string, text: string): Promise<void> {
+  private async sendToTarget(userId: string, text: string, imagePaths: string[] = []): Promise<void> {
+    const turn: PendingCodexTurn = { text, imagePaths };
     const status = await this.sessions.status(userId);
     const pending = this.queued.get(userId)?.length ?? 0;
     if (status.running && !this.draining.has(userId) && pending === 0) {
       try {
-        const steered = await this.sessions.steer(userId, text);
+        const steered = await this.sessions.steer(userId, text, imagePaths);
         if (steered.accepted) {
           await this.reply(userId, '已追加，继续处理。');
           return;
@@ -565,7 +618,7 @@ export class BridgeApp {
     }
     if (status.running || this.draining.has(userId) || pending > 0) {
       const queue = this.queued.get(userId) ?? [];
-      queue.push(text);
+      queue.push(turn);
       this.queued.set(userId, queue);
       await this.reply(userId, `已排队 ${queue.length} 条，任务完成后继续。`);
       if (!status.running && !this.draining.has(userId)) {
@@ -575,7 +628,7 @@ export class BridgeApp {
       }
       return;
     }
-    const result = await this.sessions.send(userId, text);
+    const result = await this.sessions.send(userId, text, imagePaths);
     if (!result.accepted) {
       await this.handleControl(userId, text, 'no-session');
       return;
@@ -793,10 +846,10 @@ export class BridgeApp {
     if (!next) return;
 
     try {
-      const result = await this.sessions.send(userId, next);
+      const result = await this.sessions.send(userId, next.text, next.imagePaths);
       if (!result.accepted) {
         this.queued.delete(userId);
-        await this.handleControl(userId, next, 'no-session');
+        await this.handleControl(userId, next.text, 'no-session');
         return;
       }
       const remaining = this.queued.get(userId)?.length ?? 0;
@@ -810,7 +863,7 @@ export class BridgeApp {
       }
       if (isStaleSessionError(error)) {
         this.queued.delete(userId);
-        await this.recoverStaleSession(userId, next);
+        await this.recoverStaleSession(userId, next.text);
         return;
       }
       const rest = this.queued.get(userId) ?? [];
