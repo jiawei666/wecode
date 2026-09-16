@@ -131,14 +131,14 @@ export async function stopDaemon(config: AppConfig): Promise<boolean> {
   }
   if (!current.owned) throw new Error(`PID ${current.pid} 正在运行，但无法确认它属于 wecode；未发送停止信号。`);
 
-  process.kill(current.pid, 'SIGTERM');
+  await signalDaemon(current.pid, 'SIGTERM');
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (Date.now() < deadline && isProcessAlive(current.pid)) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (isProcessAlive(current.pid)) {
     try {
-      process.kill(current.pid, 'SIGKILL');
+      await signalDaemon(current.pid, 'SIGKILL');
     } catch {
       // The process may have exited between the check and the signal.
     }
@@ -146,6 +146,29 @@ export async function stopDaemon(config: AppConfig): Promise<boolean> {
   if (isProcessAlive(current.pid)) throw new Error(`wecode（PID ${current.pid}）未能在 ${STOP_TIMEOUT_MS / 1000} 秒内退出。`);
   await rm(daemonPaths(config).pidFile, { force: true });
   return true;
+}
+
+async function signalDaemon(pid: number, signal: NodeJS.Signals): Promise<void> {
+  if (process.platform === 'win32') {
+    const args = ['/PID', String(pid), '/T'];
+    if (signal === 'SIGKILL') args.push('/F');
+    try {
+      await execFile('taskkill.exe', args, { timeout: STOP_TIMEOUT_MS, windowsHide: true });
+    } catch (error) {
+      if (!isProcessAlive(pid) || signal === 'SIGTERM') return;
+      throw error;
+    }
+    return;
+  }
+  try {
+    // startDaemon creates a detached process group. Signaling the group also
+    // stops a child App Server when the daemon cannot finish gracefully.
+    process.kill(-pid, signal);
+    return;
+  } catch {
+    // Fall back to the daemon PID when the process group is already gone.
+  }
+  process.kill(pid, signal);
 }
 
 export async function readDaemonLogs(config: AppConfig): Promise<string> {

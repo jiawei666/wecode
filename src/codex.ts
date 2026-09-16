@@ -251,8 +251,7 @@ export class CodexAppServer {
     this.process = null;
     this.managedRuntime = undefined;
     this.deferredRuntimeFingerprint = undefined;
-    if (!managedProcess) return;
-    await this.terminateManagedProcess(managedProcess);
+    if (managedProcess) await this.terminateManagedProcess(managedProcess);
   }
 
   private async terminateManagedProcess(managedProcess: ChildProcess): Promise<void> {
@@ -283,6 +282,24 @@ export class CodexAppServer {
       managedProcess.kill('SIGTERM');
     }
     await exited;
+    if (managedProcess.exitCode === null) {
+      try {
+        managedProcess.kill('SIGKILL');
+      } catch {
+        // The process may have exited between the timeout and the final signal.
+      }
+      await new Promise<void>((resolve) => {
+        if (managedProcess.exitCode !== null) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(resolve, 1_000);
+        managedProcess.once('exit', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
     // The App Server owns persisted threads; only our child process is stopped.
   }
 
@@ -361,7 +378,7 @@ export class CodexAppServer {
     };
   }
 
-  async releaseExternalWriter(threadId: string): Promise<ExternalWriterRelease> {
+  async releaseExternalWriter(threadId: string, options: { force?: boolean } = {}): Promise<ExternalWriterRelease> {
     const codexHome = process.env.CODEX_HOME?.trim() || path.join(homedir(), '.codex');
     const lockPath = path.resolve(codexHome, 'thread-writer-locks', `${threadId}.lock`);
     const owners = await externalWriterPids(lockPath, this.process?.pid);
@@ -374,7 +391,7 @@ export class CodexAppServer {
       };
     }
 
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && !options.force) {
       return {
         attempted: false,
         released: false,
@@ -403,7 +420,11 @@ export class CodexAppServer {
       attempted: true,
       released,
       pids: signaled,
-      ...(released ? {} : { detail: '外部 Codex 客户端未在安全退出窗口内释放锁' }),
+      ...(released ? {} : {
+        detail: process.platform === 'win32'
+          ? 'Windows 外部 Codex 客户端持有目标锁，尝试结束锁持有进程后仍未释放'
+          : '外部 Codex 客户端未在安全退出窗口内释放锁',
+      }),
     };
   }
 
@@ -662,6 +683,14 @@ async function processCommand(pid: number): Promise<string> {
 }
 
 async function requestExternalWriterStop(pid: number): Promise<void> {
+  if (process.platform === 'win32') {
+    try {
+      await execFile('taskkill.exe', ['/PID', String(pid)], { timeout: 5_000, windowsHide: true });
+    } catch {
+      // The owner may have exited between discovery and taskkill.
+    }
+    return;
+  }
   try {
     process.kill(pid, 'SIGINT');
   } catch {
@@ -670,8 +699,16 @@ async function requestExternalWriterStop(pid: number): Promise<void> {
 }
 
 async function forceStopExternalWriter(pid: number): Promise<void> {
+  if (process.platform === 'win32') {
+    try {
+      await execFile('taskkill.exe', ['/PID', String(pid), '/F'], { timeout: 5_000, windowsHide: true });
+    } catch {
+      // The owner may have exited while the graceful stop was pending.
+    }
+    return;
+  }
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(pid, 'SIGKILL');
   } catch {
     // The process may have exited while the graceful signal was pending.
   }

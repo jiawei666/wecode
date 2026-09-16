@@ -282,17 +282,22 @@ export class SessionManager {
     const binding = this.store.getBinding(userId);
     if (!binding) return false;
     const active = [...this.activeTurns.values()].find((turn) => turn.threadId === binding.threadId);
-    if (active) {
-      await this.appServer.interrupt(active.threadId, active.turnId).catch(() => undefined);
-      return true;
-    }
-    return false;
+    const snapshot = active ? undefined : await this.readOccupiedThread(binding.threadId);
+    const nativeActiveTurn = snapshot ? activeTurnOf(snapshot) : undefined;
+    const turnId = active?.turnId || nativeActiveTurn?.id;
+    if (!turnId) return false;
+    await this.appServer.interrupt(binding.threadId, turnId).catch(() => undefined);
+    return true;
   }
 
   async release(userId: string): Promise<SessionReleaseResult> {
     const binding = this.store.getBinding(userId);
     if (!binding) return { released: false };
-    await this.stop(userId);
+    if (await this.stop(userId)) {
+      await this.waitForIdle(binding.threadId, binding.cwd).catch((error) => {
+        process.stderr.write(`[session] release 等待 Codex 会话空闲失败：${errorText(error)}\n`);
+      });
+    }
     await this.appServer.unsubscribe(binding.threadId).catch(() => undefined);
     const externalWriter = process.platform === 'win32' && this.appServer.releaseExternalWriter
       ? await this.appServer.releaseExternalWriter(binding.threadId).catch(() => undefined)
@@ -661,24 +666,34 @@ export class SessionManager {
     if (activeTurn) {
       try {
         await this.appServer.interrupt(threadId, activeTurn.id);
+        await this.waitForIdle(threadId, cwd);
       } catch (error) {
-        throw new SessionOccupiedError(threadId, cwd, true, `App Server 无法中断当前任务：${errorText(error)}`, true);
+        // A Desktop thread can be visible through one App Server while its
+        // active turn belongs to another. If that server cannot interrupt it,
+        // continue through the confirmed writer-release path below.
+        return this.resumeAfterTakeover(threadId, cwd, true, error);
       }
-      await this.waitForIdle(threadId, cwd);
     }
 
     return this.resumeAfterTakeover(threadId, cwd, Boolean(activeTurn));
   }
 
-  private async resumeAfterTakeover(threadId: string, cwd: string, interruptedTurn: boolean): Promise<ThreadSummary> {
+  private async resumeAfterTakeover(
+    threadId: string,
+    cwd: string,
+    interruptedTurn: boolean,
+    interruptionError?: unknown,
+  ): Promise<ThreadSummary> {
     const firstResume = await this.retryResume(threadId);
     if (firstResume) return firstResume;
 
-    let releaseDetail = '';
+    let releaseDetail = interruptionError === undefined
+      ? ''
+      : `App Server 无法停止当前任务：${errorText(interruptionError)}`;
     if (this.appServer.releaseExternalWriter) {
       try {
-        const release = await this.appServer.releaseExternalWriter(threadId);
-        releaseDetail = release.detail || '';
+        const release = await this.appServer.releaseExternalWriter(threadId, { force: true });
+        releaseDetail = [releaseDetail, release.detail].filter(Boolean).join('；');
         if (release.released) {
           const resumed = await this.retryResume(threadId);
           if (resumed) return resumed;

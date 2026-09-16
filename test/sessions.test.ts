@@ -562,6 +562,55 @@ test('safely interrupts an active external turn before resuming its session', as
   }
 });
 
+test('releases the local writer when another App Server cannot interrupt an active turn', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-takeover-remote-interrupt-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  let released = false;
+  let releaseCalls = 0;
+  let interruptCalls = 0;
+  let resumeCalls = 0;
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    readThread: async () => ({
+      id: 'desktop-thread',
+      cwd: directory,
+      status: { type: 'active' },
+      turns: [{ id: 'desktop-turn', status: 'inProgress' }],
+    }),
+    interrupt: async () => {
+      interruptCalls += 1;
+      throw new Error('thread not found');
+    },
+    resumeThread: async () => {
+      resumeCalls += 1;
+      if (!released) throw new Error('thread-store conflict: active writer');
+      return { id: 'desktop-thread', cwd: directory, status: { type: 'idle' } };
+    },
+    releaseExternalWriter: async (_threadId: string, options?: { force?: boolean }) => {
+      releaseCalls += 1;
+      assert.equal(options?.force, true);
+      released = true;
+      return { attempted: true, released: true, pids: [1234] };
+    },
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    const result = await manager.use('user', 'desktop-thread', directory, {}, true);
+    assert.equal(result.binding.threadId, 'desktop-thread');
+    assert.equal(interruptCalls, 1);
+    assert.equal(releaseCalls, 1);
+    assert.ok(resumeCalls > 1);
+    assert.equal(store.getBinding('user')?.threadId, 'desktop-thread');
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('releases an idle external writer after confirmed takeover', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-session-idle-takeover-'));
   const store = new StateStore(path.join(directory, 'state.json'));
@@ -576,8 +625,9 @@ test('releases an idle external writer after confirmed takeover', async () => {
       return { id: 'idle-occupied-thread', cwd: directory, status: { type: 'idle' } };
     },
     readThread: async () => ({ id: 'idle-occupied-thread', cwd: directory, status: { type: 'idle' }, turns: [] }),
-    releaseExternalWriter: async () => {
+    releaseExternalWriter: async (_threadId: string, options?: { force?: boolean }) => {
       releaseCalls += 1;
+      assert.equal(options?.force, true);
       return { released: true, pids: [1234] };
     },
     close: async () => undefined,
@@ -618,6 +668,51 @@ test('releases App Server ownership before a binding is cancelled', async () => 
   try {
     await manager.release('user');
     assert.deepEqual(events, ['unsubscribe:release-thread', 'close']);
+  } finally {
+    await manager.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('stops a native active turn during release after local turn state is lost', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-release-active-turn-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  let readCalls = 0;
+  let interrupted: { threadId: string; turnId: string } | undefined;
+  const fakeAppServer = {
+    onNotification: () => () => undefined,
+    readThread: async () => {
+      readCalls += 1;
+      return readCalls === 1
+        ? {
+          id: 'native-active-thread',
+          cwd: directory,
+          status: { type: 'active' },
+          turns: [{ id: 'native-turn', status: 'inProgress' }],
+        }
+        : { id: 'native-active-thread', cwd: directory, status: { type: 'idle' }, turns: [] };
+    },
+    interrupt: async (threadId: string, turnId: string) => {
+      interrupted = { threadId, turnId };
+    },
+    unsubscribe: async () => undefined,
+    close: async () => undefined,
+  } as unknown as CodexAppServer;
+  store.setBinding('user', {
+    threadId: 'native-active-thread',
+    cwd: directory,
+    hasRollout: true,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  });
+  const manager = new SessionManager(loadConfig(), store, fakeAppServer, async () => undefined);
+
+  try {
+    await manager.release('user');
+    assert.deepEqual(interrupted, { threadId: 'native-active-thread', turnId: 'native-turn' });
+    assert.equal(readCalls, 2);
   } finally {
     await manager.close();
     await store.save();

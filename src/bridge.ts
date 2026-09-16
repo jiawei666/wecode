@@ -335,7 +335,7 @@ export class BridgeApp {
     const context = `${currentContext}${previousContext}`;
     const feedback = control.executionFeedback ? `\n上一次 wecode 系统执行结果：${control.executionFeedback}` : '';
     const pendingTakeover = control.pendingTakeover
-      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先通过 Codex App Server 中断活动 turn；Windows 若仍有外部客户端持有该 thread 锁，不会强制关闭客户端，接管失败时会自动尝试分叉新会话。`
+      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先尝试中断活动 turn；若外部 Codex 客户端仍持有该 thread 锁，wecode 会尝试结束准确的锁持有进程后接管，这可能关闭本地 Codex Desktop 的会话进程；仍无法释放时会自动尝试分叉新会话。`
       : '';
     const catalogState = shouldRefreshSessionCatalog(text)
       ? '当前尚未加载原生会话 catalog；本条请求明确需要最新历史会话列表，请返回 request_catalog，禁止复用上一轮 catalog。'
@@ -943,12 +943,12 @@ export class BridgeApp {
     const current = this.store.getControl(userId);
     const now = Date.now();
     if (error.takeoverAttempted) {
-      const windowsClientProtected = process.platform === 'win32' && /Windows 外部 Codex 客户端持有目标锁/.test(error.message);
+      const windowsTakeoverFailed = process.platform === 'win32' && /Windows 外部 Codex 客户端持有目标锁/.test(error.message);
       const message = error.running
         ? '安全接管失败：外部客户端仍有活动任务，未能安全释放目标会话。'
         : '安全接管失败：任务已空闲，但未能释放持有目标锁的外部客户端。';
-      const nextStep = windowsClientProtected
-        ? '为避免 GPT/Codex 客户端崩溃，Windows 不会自动强杀外部客户端；请先完全退出客户端（包括托盘进程）后重试，也可以发送“分叉当前会话”；'
+      const nextStep = windowsTakeoverFailed
+        ? 'wecode 已尝试结束目标锁持有进程但仍未释放；请完全退出 Codex Desktop（包括托盘进程）后重试，也可以发送“分叉当前会话”；'
         : error.running
           ? '请先在外部客户端停止任务并释放会话后重试；'
           : '请先退出外部 Codex 客户端或关闭该会话后重试；';
@@ -979,7 +979,7 @@ export class BridgeApp {
     });
     await this.reply(
       userId,
-      `${message}\n回复“确认接管”进行安全接管；Windows 若仍被外部客户端（Desktop）占用，会自动复制已保存历史创建新会话，不会强制关闭客户端。\n也可以回复“分叉当前会话”；否则回复“退出”。`,
+      `${message}\n回复“确认接管”进行安全接管；确认后，若外部客户端仍持有该会话锁，wecode 会尝试结束准确的锁持有进程，这可能关闭本地 Codex Desktop 的会话进程。仍无法释放时会自动复制已保存历史创建新会话。\n也可以回复“分叉当前会话”；否则回复“退出”。`,
       { source: 'bridge' },
     );
   }

@@ -20,7 +20,7 @@ export interface SessionAdapter {
   /** Create a new thread with a copy of the source thread's persisted history. */
   forkThread?(threadId: string, options?: SessionLaunchOptions): Promise<ThreadSummary>;
   /** Attempt to release only the external process that owns this exact thread lock. */
-  releaseExternalWriter?(threadId: string): Promise<ExternalWriterRelease>;
+  releaseExternalWriter?(threadId: string, options?: { force?: boolean }): Promise<ExternalWriterRelease>;
   readThread(threadId: string): Promise<ThreadSnapshot>;
   listThreads(cwd?: string, limit?: number): Promise<ThreadSummary[]>;
   startTurn(threadId: string, cwd: string, text: string, options?: SessionLaunchOptions): Promise<string>;

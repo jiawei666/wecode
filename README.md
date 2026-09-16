@@ -149,11 +149,11 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 帅哥，进入本机维护模式。请检查 wecode 当前版本，重新打包并重启服务，验证日志和进程。
 ```
 
-维护模式已经使用 wecode 为控制 Agent 配置的本机终端权限。它不会因为进入维护模式主动重建会话管理 Agent；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。
+维护模式已经使用 wecode 为控制 Agent 配置的本机终端权限。它不会因为进入维护模式主动重建会话管理 Agent；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。如果本机 Codex 提示由 wecode 使用过的会话仍被占用，先执行 `wecode restart`；新版会在释放最后一个绑定时回收本实例启动的 App Server，并在停止 wecode 时结束同一进程组里的 App Server。退出绑定时也会主动停止原生仍在运行的 turn。
 
 Codex 的用户可见 commentary/preamble（例如“我先查看两张截图……”）会合并后发送到微信，不添加“思路摘要”或“处理提示”前缀；内部 reasoning summary 不转发，任务完成后的最终回复会单独发送。需要调整 Codex 生成的摘要级别时，可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
-发送“分叉”或“复制会话”会通过 Codex App Server 复制当前会话的已保存历史，创建并绑定一个新会话；原会话不会被关闭。Windows Codex Desktop 占用会话时，确认接管失败也会自动使用这个方式，不会强制结束 Desktop。正在生成中的未完成回复不会复制。
+发送“分叉”或“复制会话”会通过 Codex App Server 复制当前会话的已保存历史，创建并绑定一个新会话；原会话不会被关闭。确认接管时，wecode 会先尝试中断活动 turn；若外部 Codex 客户端仍持有 thread 锁，会尝试结束准确的锁持有进程，这可能关闭本地 Codex Desktop 的会话进程。锁仍无法释放时会自动复制已保存历史并创建新会话。正在生成中的未完成回复不会复制。
 发送“列出会话”或“会话列表”会走快速通道，直接读取最近 20 个会话；列表显示后直接回复序号（如 `2`）即可快速切换，也兼容“第 2 个”。
 发送“查看活动”或“查看最近任务”会走只读通道，只调用会话列表和读取接口查看任务状态、计划、命令执行、文件修改或工具调用摘要，不会恢复、接管或绑定目标会话。
 新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出`、`帮助` 可以直接使用。
@@ -256,7 +256,8 @@ wecode 默认请求 Codex 生成 `detailed` reasoning summary；其中用户可�
 - 分享页提示未安装 `cloudflared`：执行 `cloudflared --version`；如果命令不在 `PATH`，在配置文件中填写绝对路径。
 - `reasoning_effort must not be empty`：wecode 不会向 Codex 发送空的 `model_reasoning_effort`；如果仍出现，执行 `wecode restart` 后查看最新日志。
 - `timeout waiting for child process to exit`：这是 Codex App Server 刷新模型列表的外部警告；不影响已能使用的会话，先执行 `wecode restart`，持续出现时升级 Codex CLI。
-- `已在另一个应用中打开` 或接管失败：Windows 会保护外部 Codex Desktop，不会强杀持锁进程；完全退出 Desktop（包括托盘）后重试，或发送 `分叉` / `复制会话`。
+- 本机 Codex 提示会话被 wecode 占用：先在微信发送 `退出`释放当前绑定；如果需要停止后台 wecode，执行 `wecode stop`，再在本机执行 `codex resume`。如果仍被占用，执行 `wecode logs` 查看是否有 `stale App Server` 或 `thread-store conflict`。
+- `已在另一个应用中打开` 或接管失败：确认接管会尝试结束持有 thread 锁的外部进程；如果仍失败，完全退出 Desktop（包括托盘）后重试，或发送 `分叉` / `复制会话`。
 - 二维码过期：重新执行 `wecode login`。
 - 发现 `~/.cloudflared/config.yaml` 后 Quick Tunnel 无法启动：按照 [Cloudflare 说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) 暂时移开该配置文件。
 
