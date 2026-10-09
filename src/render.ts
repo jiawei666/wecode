@@ -525,11 +525,15 @@ export async function renderResponse(input: RenderInput, pages: PagePublisher): 
   const text = normalizeWechatText(input.text);
   const pageMarkdown = await includeReferencedMarkdown(input.text, input.cwd);
   const length = Array.from(text).length;
-  const reportLike = looksLikeReport(pageMarkdown);
+  const reportLike = looksLikeReport(text);
   const includesReferencedMarkdown = pageMarkdown !== input.text;
+  const explicitReportReference =
+    /(?:已完成分析并生成报告|生成.{0,8}报告|主报告|完整报告|报告文件|总结文件|\b(?:report|summary)\b)/i.test(text);
+  const referencedContentPage = includesReferencedMarkdown
+    && (length > 1500 || input.kind === 'report' || explicitReportReference);
   const semanticPage = input.presentation === 'page'
     || reportLike
-    || includesReferencedMarkdown
+    || referencedContentPage
     || ((input.kind === 'plan' || input.kind === 'diff') && length > 1500);
   const safetyPage = length > 12_000;
   if (semanticPage || safetyPage) {

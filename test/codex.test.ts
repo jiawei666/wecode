@@ -79,20 +79,23 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
   const address = httpServer.address();
   if (!address || typeof address === 'string') throw new Error('test server did not expose a port');
 
-  const appServer = new CodexAppServer({ ...loadConfig(), codexEndpoint: `ws://127.0.0.1:${address.port}` });
+  const codexEndpoint = `ws://127.0.0.1:${address.port}`;
+  const appServer = new CodexAppServer({ ...loadConfig(), codexModel: '', codexFast: false, codexEndpoint });
   try {
     await appServer.startThread('/workspace/project');
     assert.equal(params?.sandbox, 'danger-full-access');
-    assert.equal(params?.serviceTier, null);
+    assert.equal('serviceTier' in (params ?? {}), false);
     assert.equal(params?.model, undefined);
     assert.equal((params?.config as Record<string, unknown>).model_reasoning_effort, undefined);
     assert.equal((params?.config as Record<string, unknown>).model_reasoning_summary, 'detailed');
-    assert.deepEqual((params?.config as Record<string, unknown>).service_tier, null);
+    assert.equal('service_tier' in (params?.config as Record<string, unknown>), false);
     const forked = await appServer.forkThread('source-thread');
     assert.equal(forked.id, 'forked-thread');
     assert.equal(forkParams?.threadId, 'source-thread');
+    assert.equal('serviceTier' in (forkParams ?? {}), false);
     assert.equal((forkParams?.config as Record<string, unknown>).model_reasoning_effort, undefined);
     assert.equal((forkParams?.config as Record<string, unknown>).model_reasoning_summary, 'detailed');
+    assert.equal('service_tier' in (forkParams?.config as Record<string, unknown>), false);
     const resumed = await appServer.resumeThread('test-thread');
     assert.equal(resumed.id, 'test-thread');
     assert.equal((resumeParams?.config as Record<string, unknown>).model_reasoning_summary, 'detailed');
@@ -108,6 +111,7 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
       { type: 'localImage', path: '/tmp/wecode-image.jpg' },
     ]);
     assert.equal(turnParams?.summary, 'detailed');
+    assert.equal('serviceTier' in (turnParams ?? {}), false);
     assert.equal(await appServer.steerTurn('test-thread', 'turn-1', '补充要求', ['/tmp/wecode-image-2.png']), 'turn-1');
     assert.equal(steerParams?.threadId, 'test-thread');
     assert.equal(steerParams?.expectedTurnId, 'turn-1');
@@ -115,6 +119,20 @@ test('sends the current Codex sandbox enum to thread/start', async () => {
       { type: 'text', text: '补充要求' },
       { type: 'localImage', path: '/tmp/wecode-image-2.png' },
     ]);
+
+    const fastAppServer = new CodexAppServer({ ...loadConfig(), codexModel: '', codexFast: true, codexEndpoint });
+    try {
+      await fastAppServer.startThread('/workspace/project');
+      assert.equal(params?.serviceTier, 'fast');
+      assert.equal((params?.config as Record<string, unknown>).service_tier, 'fast');
+      await fastAppServer.forkThread('source-thread');
+      assert.equal(forkParams?.serviceTier, 'fast');
+      assert.equal((forkParams?.config as Record<string, unknown>).service_tier, 'fast');
+      await fastAppServer.startTurn('test-thread', '/workspace/project', '继续');
+      assert.equal(turnParams?.serviceTier, 'fast');
+    } finally {
+      await fastAppServer.close();
+    }
   } finally {
     await appServer.close();
     await new Promise<void>((resolve) => websocketServer.close(() => resolve()));
@@ -242,6 +260,7 @@ test('releases the Wecode App Server process so a local client can resume the th
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wecode-app-server-release-'));
   const fakeAppServer = path.join(directory, 'app-server');
   const generationFile = path.join(directory, 'generation');
+  const appServerArgsFile = path.join(directory, 'app-server-args.json');
   const originalGenerationFile = process.env.WECODE_TEST_SERVER_GENERATION_FILE;
   process.env.WECODE_TEST_SERVER_GENERATION_FILE = generationFile;
   let portServer: ReturnType<typeof createServer> | undefined;
@@ -261,6 +280,7 @@ const generationFile = process.env.WECODE_TEST_SERVER_GENERATION_FILE;
 const previousGeneration = Number(readFileSync(generationFile, 'utf8').trim() || '0');
 const generation = previousGeneration + 1;
 writeFileSync(generationFile, String(generation));
+writeFileSync(${JSON.stringify(appServerArgsFile)}, JSON.stringify(process.argv));
 const endpoint = new URL(process.argv[process.argv.indexOf('--listen') + 1]);
 const httpServer = createServer((request, response) => {
   if (request.url === '/readyz') {
@@ -316,6 +336,8 @@ process.on('SIGTERM', () => {
     manager = new SessionManager(config, store, appServer, async () => undefined);
     const { binding } = await manager.create('user', directory);
     assert.equal(binding.threadId, 'thread-release-test');
+    const appServerArgs = JSON.parse(await readFile(appServerArgsFile, 'utf8')) as string[];
+    assert.equal(appServerArgs.includes('service_tier=null'), false);
 
     await manager.release('user');
 

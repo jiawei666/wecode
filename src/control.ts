@@ -122,8 +122,6 @@ export class ControlAgent {
       outputPath,
       '--dangerously-bypass-approvals-and-sandbox',
       '--skip-git-repo-check',
-      '-c',
-      'service_tier=null',
       '-C',
       this.config.homeDir,
     ];
@@ -199,14 +197,15 @@ function runProcess(
     });
     active.set(userId, child);
     child.once('error', (error) => finish(() => reject(codexProcessError(command, error, stderr))));
-    child.once('close', (code) => {
+    child.once('close', (code, signal) => {
       finish(() => {
         if (code !== 0) {
           const detail = (stderr.trim() || stdout.trim()).slice(-2000);
+          const exitReason = code === null ? `exit signal ${signal ?? 'unknown'}` : `exit ${code}`;
           if (code === 9009 || /not recognized as an internal or external command/i.test(detail)) {
             reject(codexProcessError(command, { code }, detail));
           } else {
-            reject(new Error(detail ? `会话管理 Agent exit ${code ?? 'signal'}: ${detail}` : `会话管理 Agent exit ${code ?? 'signal'}`));
+            reject(new Error(detail ? `会话管理 Agent ${exitReason}: ${detail}` : `会话管理 Agent ${exitReason}`));
           }
         }
         else resolve({ stdout, stderr, sessionId: findSessionId(stdout) });

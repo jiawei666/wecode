@@ -309,18 +309,18 @@ export class CodexAppServer {
     const reasoningEffort = options.reasoningEffort || this.config.codexReasoningEffort;
     const fast = options.fast ?? this.config.codexFast;
     const threadConfig: Record<string, unknown> = {
-      service_tier: fast ? 'fast' : null,
       model_reasoning_summary: this.config.codexReasoningSummary,
     };
+    if (fast) threadConfig.service_tier = 'fast';
     if (reasoningEffort) threadConfig.model_reasoning_effort = reasoningEffort;
     const params: Record<string, unknown> = {
       cwd,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
       serviceName: 'wecode',
-      serviceTier: fast ? 'fast' : null,
       config: threadConfig,
     };
+    if (fast) params.serviceTier = 'fast';
     if (model) params.model = model;
     const result = await this.request<AppServerThreadResponse>('thread/start', params);
     const thread = result.thread;
@@ -353,17 +353,17 @@ export class CodexAppServer {
     const reasoningEffort = options.reasoningEffort || this.config.codexReasoningEffort;
     const fast = options.fast ?? this.config.codexFast;
     const threadConfig: Record<string, unknown> = {
-      service_tier: fast ? 'fast' : null,
       model_reasoning_summary: this.config.codexReasoningSummary,
     };
+    if (fast) threadConfig.service_tier = 'fast';
     if (reasoningEffort) threadConfig.model_reasoning_effort = reasoningEffort;
     const params: Record<string, unknown> = {
       threadId,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
-      serviceTier: fast ? 'fast' : null,
       config: threadConfig,
     };
+    if (fast) params.serviceTier = 'fast';
     if (model) params.model = model;
     const result = await this.request<AppServerThreadResponse>('thread/fork', params);
     if (!result.thread?.id) throw new Error(`Codex thread could not be forked: ${threadId}`);
@@ -478,9 +478,9 @@ export class CodexAppServer {
       cwd,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
-      serviceTier: fast ? 'fast' : null,
       summary: this.config.codexReasoningSummary,
     };
+    if (fast) params.serviceTier = 'fast';
     if (options.model || this.config.codexModel) params.model = options.model || this.config.codexModel;
     if (options.reasoningEffort || this.config.codexReasoningEffort) params.effort = options.reasoningEffort || this.config.codexReasoningEffort;
     const result = await this.request<{ turn?: { id?: string } }>('turn/start', params);
@@ -581,8 +581,6 @@ export class CodexAppServer {
       'approval_policy="never"',
       '-c',
       'sandbox_mode="danger-full-access"',
-      '-c',
-      'service_tier=null',
     ];
     const runtime = await tryInspectCodexRuntime(this.config.codexCommand);
     const child = spawnCodex(this.config.codexCommand, args, {

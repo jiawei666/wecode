@@ -84,6 +84,38 @@ test('embeds referenced local report files and returns a bare share URL', async 
   }
 });
 
+test('keeps a short reply with a referenced context file in chat', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-context-reference-'));
+  const instructionsPath = path.join(directory, 'AGENTS.md');
+  const instructions = [
+    '# 项目约定',
+    '',
+    '## 修改流程',
+    '',
+    '总结、结论、建议、改进与风险。测试与验证。架构、目录结构和文件变更。代码质量问题与发现。',
+    '具体规则。'.repeat(220),
+  ].join('\n');
+  await writeFile(instructionsPath, instructions, 'utf8');
+  let published = false;
+  const pages = {
+    publish: async () => {
+      published = true;
+      return { title: '上下文引用', url: 'https://share.example.test/p/context' };
+    },
+  } as unknown as PagePublisher;
+
+  try {
+    const result = await renderResponse({
+      text: `这段对话刚开始，还没讨论具体任务。\n\n[AGENTS.md](${instructionsPath})`,
+      cwd: directory,
+    }, pages);
+    assert.equal(published, false);
+    assert.equal(result.mode, 'chat');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('renders a branded mobile share shell with dynamic metadata', () => {
   const html = renderPageHtml(
     '接口故障排查结果',

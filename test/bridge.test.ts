@@ -1008,7 +1008,7 @@ test('forwards WeChat images and file paths to Codex and keeps attachments in th
   }
 });
 
-test('lets the session-management Agent format lists and resolve a natural-language selection', async () => {
+test('switches to the numbered session after the management Agent lists sessions', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-control-list-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
@@ -1064,17 +1064,19 @@ test('lets the session-management Agent format lists and resolve a natural-langu
 
   try {
     await bridge.handle(message('帅哥，帮我找 agency-cloud-core 最近 5 个会话', 'control-1'));
-    assert.match(sent.at(-1) || '', /> \*\*会话管理 Agent\*\*/);
-    assert.match(sent.at(-1) || '', /第一个摘要/);
+    assert.match(sent.at(-1) || '', /1\. \*\*agency-cloud-core\*\* — 第一个摘要/);
+    assert.match(sent.at(-1) || '', /2\. \*\*agency-cloud-core\*\* — 第二个摘要/);
+    assert.match(sent.at(-1) || '', /回复序号即可切换/);
     assert.doesNotMatch(sent.at(-1) || '', /target-thread|gpt-5/);
     assert.ok(store.getControl('user'));
 
-    await bridge.handle(message('第 2 个', 'control-2'));
+    await bridge.handle(message('2', 'control-2'));
     assert.match(sent.at(-1) || '', /已切换会话/);
     assert.match(sent.at(-1) || '', /后续普通消息/);
     assert.doesNotMatch(sent.at(-1) || '', /唤醒词/);
     assert.equal(store.getBinding('user')?.threadId, 'target-thread');
     assert.equal(store.getControl('user'), undefined);
+    assert.equal(runCount, 2);
   } finally {
     await bridge.close();
     await store.save();

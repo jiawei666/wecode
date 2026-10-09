@@ -50,16 +50,16 @@ description: 为本项目执行统一版本发布：同步 package.json、packag
 3. 确认 npm 登录的是公共 registry：
 
    ```bash
-   npm whoami --registry=https://registry.npmjs.org/
+   npm whoami --userconfig="$HOME/.npmrc-wecode-publish" --registry=https://registry.npmjs.org/
    ```
 
-   发布使用用户级环境变量 `NPM_TOKEN`，并由用户级 npm 配置引用它：
+   发布使用用户级环境变量 `WECODE_NPM_TOKEN`，并使用独立的 npm 发布配置文件 `~/.npmrc-wecode-publish`：
 
    ```ini
-   //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+   //registry.npmjs.org/:_authToken=${WECODE_NPM_TOKEN}
    ```
 
-   只检查 `npm whoami` 的结果，不读取、打印或把 token 写入仓库、skill 或命令行参数。若 `NPM_TOKEN` 未设置或认证失败，停止发布并提示用户重新配置凭证；2FA/OTP 由用户在终端或浏览器中完成。
+   所有访问 npm 公共 registry 的认证命令都必须显式使用 `--userconfig="$HOME/.npmrc-wecode-publish"`；全局 `~/.npmrc` 不得包含 token 环境变量占位符，避免影响其他仓库的 Yarn/Git hook。只检查 `npm whoami` 的结果，不读取、打印或把 token 写入仓库、skill 或命令行参数。若 `WECODE_NPM_TOKEN` 未设置或认证失败，停止发布并提示用户重新配置凭证；2FA/OTP 由用户在终端或浏览器中完成。
 
 4. 检查目标版本没有被占用，并确认版本符合 SemVer。若目标版本已存在，不能覆盖或再次发布，必须选择下一个版本。
 
@@ -108,7 +108,7 @@ description: 为本项目执行统一版本发布：同步 package.json、packag
 5. 发布 npm：
 
    ```bash
-   npm publish --access public --registry=https://registry.npmjs.org/
+   npm publish --userconfig="$HOME/.npmrc-wecode-publish" --access public --registry=https://registry.npmjs.org/
    ```
 
    当前项目的 `prepublishOnly` 会运行测试和 lint，`prepare` 会重新构建；仍然保留发布前的显式检查，便于尽早发现问题。
@@ -124,7 +124,7 @@ description: 为本项目执行统一版本发布：同步 package.json、packag
 ## 发布后验证
 
 ```bash
-npm view @jiawei666/wecode version --registry=https://registry.npmjs.org/
+npm view @jiawei666/wecode version --userconfig="$HOME/.npmrc-wecode-publish" --registry=https://registry.npmjs.org/
 git ls-remote --tags origin vX.Y.Z
 git status --short
 ```

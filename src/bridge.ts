@@ -41,6 +41,7 @@ const QUICK_SESSION_LIST_TTL_MS = 10 * 60_000;
 interface QuickSessionList {
   expiresAt: number;
   limit: number;
+  cwd?: string;
   sessions: ThreadSummary[];
 }
 
@@ -307,20 +308,27 @@ export class BridgeApp {
     await this.sendToTarget(userId, text);
   }
 
-  private async listSessions(userId: string, requestedLimit: number): Promise<void> {
+  private async listSessions(
+    userId: string,
+    requestedLimit: number,
+    cwd?: string,
+    showProgress = true,
+  ): Promise<void> {
     const limit = Math.min(Math.max(Math.floor(requestedLimit) || QUICK_SESSION_LIST_LIMIT, 1), QUICK_SESSION_LIST_LIMIT);
+    const normalizedCwd = cwd?.trim() || undefined;
     const cached = this.quickSessionLists.get(userId);
     let sessions: ThreadSummary[];
-    if (cached && cached.expiresAt > Date.now() && cached.limit >= limit) {
+    if (cached && cached.expiresAt > Date.now() && cached.limit >= limit && cached.cwd === normalizedCwd) {
       sessions = cached.sessions.slice(0, limit);
     } else {
-      await this.reply(userId, '正在读取最近会话……');
-      sessions = (await this.sessions.list(undefined, limit))
+      if (showProgress) await this.reply(userId, '正在读取最近会话……');
+      sessions = (await this.sessions.list(normalizedCwd, limit))
         .sort((left, right) => (normalizeTimestamp(right.updatedAt) ?? 0) - (normalizeTimestamp(left.updatedAt) ?? 0))
         .slice(0, limit);
       this.quickSessionLists.set(userId, {
         expiresAt: Date.now() + QUICK_SESSION_LIST_TTL_MS,
         limit,
+        cwd: normalizedCwd,
         sessions: [...sessions],
       });
     }
@@ -527,12 +535,10 @@ export class BridgeApp {
       }
       case 'list_sessions':
         if (!action.text?.trim()) throw new Error('会话列表缺少展示文本');
-        await this.reply(userId, action.text, {
-          title: action.title,
-          presentation: action.presentation,
-          cwd: action.cwd,
-          source: 'control',
-        });
+        // Keep the exact sessions behind the rendered list so a following
+        // numeric reply is handled by the bridge instead of becoming a
+        // default shortcut such as "2" → status.
+        await this.listSessions(userId, action.limit ?? QUICK_SESSION_LIST_LIMIT, action.cwd, false);
         return;
       case 'status':
         await this.sendStatus(userId);

@@ -1,7 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { controlInstructions, parseAction } from '../src/control.js';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { loadConfig } from '../src/config.js';
+import { ControlAgent, controlInstructions, parseAction } from '../src/control.js';
+
+test('omits a null service tier and reports the signal that ended the control Agent', async (context) => {
+  if (process.platform === 'win32') {
+    context.skip('the fake CLI terminates itself with a POSIX signal');
+    return;
+  }
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wecode-control-signal-'));
+  const command = path.join(directory, 'fake-codex');
+  const argsPath = path.join(directory, 'args.txt');
+  const quoteShell = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+  try {
+    const script = [
+      '#!/bin/sh',
+      'cat >/dev/null',
+      `printf '%s\\n' "$@" > ${quoteShell(argsPath)}`,
+      "printf 'fake control failure\\n' >&2",
+      'kill -TERM $$',
+      '',
+    ].join('\n');
+    await writeFile(command, script);
+    await chmod(command, 0o755);
+
+    const agent = new ControlAgent({
+      ...loadConfig(),
+      codexCommand: command,
+      dataDir: directory,
+      homeDir: directory,
+      searchRoots: [],
+      controlTimeoutMs: 5_000,
+    });
+    await assert.rejects(agent.run('test-user', '检查状态'), /会话管理 Agent exit signal SIGTERM: fake control failure/);
+    const args = await readFile(argsPath, 'utf8');
+    assert.doesNotMatch(args, /service_tier=null/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('allows explicit local maintenance mode without resetting the control session', () => {
   const instructions = controlInstructions('/workspace', ['/workspace/projects']);
