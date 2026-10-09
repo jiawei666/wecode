@@ -8,3 +8,4 @@ dist/
 runtime/
 # Install cloudflared separately; keep any local binary out of commits.
 bin/cloudflared
+.codegraph/
