@@ -2,55 +2,39 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseBridgeCommand } from '../src/commands.js';
 
-test('keeps only deterministic local commands and honorific wake words', () => {
+test('keeps only deterministic status, stop, and exit commands', () => {
   assert.deepEqual(parseBridgeCommand('状态'), { kind: 'status' });
   assert.deepEqual(parseBridgeCommand('停止'), { kind: 'stop' });
-  assert.deepEqual(parseBridgeCommand('分叉'), { kind: 'fork' });
-  assert.deepEqual(parseBridgeCommand('复制会话'), { kind: 'fork' });
   assert.deepEqual(parseBridgeCommand('退出'), { kind: 'exit' });
-  assert.deepEqual(parseBridgeCommand('帮助'), { kind: 'help' });
-  assert.deepEqual(parseBridgeCommand('你好'), { kind: 'guide' });
-  assert.deepEqual(parseBridgeCommand('有哪些功能'), { kind: 'guide' });
-  assert.deepEqual(parseBridgeCommand('列出'), { kind: 'list_sessions', limit: 20 });
-  assert.deepEqual(parseBridgeCommand('列出会话'), { kind: 'list_sessions', limit: 20 });
-  assert.deepEqual(parseBridgeCommand('列出最近 5 个会话'), { kind: 'list_sessions', limit: 5 });
-  assert.deepEqual(parseBridgeCommand('会话列表'), { kind: 'list_sessions', limit: 20 });
-  assert.deepEqual(parseBridgeCommand('查看活动'), { kind: 'inspect_sessions', limit: 5, activeOnly: true });
-  assert.deepEqual(parseBridgeCommand('查看最近任务'), { kind: 'inspect_sessions', limit: 5, activeOnly: false });
-  assert.deepEqual(parseBridgeCommand('看看最近 Agent 在处理什么活'), { kind: 'inspect_sessions', limit: 5, activeOnly: true });
+  assert.equal(parseBridgeCommand('帮助'), null);
+  assert.equal(parseBridgeCommand('列出最近 5 个会话'), null);
+  assert.equal(parseBridgeCommand('查看活动'), null);
+  assert.equal(parseBridgeCommand('分叉'), null);
+});
 
-  assert.deepEqual(parseBridgeCommand('帅哥，帮我切换到 web 项目'), {
+test('supports Xiaowei wake words and common speech-to-text variants', () => {
+  assert.deepEqual(parseBridgeCommand('小微，帮我在 wecode 新建会话'), {
     kind: 'control',
-    text: '帮我切换到 web 项目',
+    text: '帮我在 wecode 新建会话',
   });
-  assert.deepEqual(parseBridgeCommand('靓仔 帮我新建一个会话'), {
+  assert.deepEqual(parseBridgeCommand('小微 帮我查找会话'), {
     kind: 'control',
-    text: '帮我新建一个会话',
+    text: '帮我查找会话',
   });
-  assert.deepEqual(parseBridgeCommand('小哥哥'), { kind: 'control', text: '' });
-  for (const wakeWord of ['哥哥', '大哥', '老哥']) {
+  assert.deepEqual(parseBridgeCommand('小威呀'), { kind: 'control', text: '' });
+  for (const wakeWord of ['小薇', '小唯', '小伟', '小巍', '晓薇', '晓微', '晓威', '晓唯', '晓伟', '小 薇']) {
     assert.deepEqual(parseBridgeCommand(`${wakeWord}，帮我查看历史`), {
       kind: 'control',
       text: '帮我查看历史',
     });
   }
+  assert.equal(parseBridgeCommand('帅哥，帮我查看历史'), null);
+  assert.equal(parseBridgeCommand('靓仔，帮我查看历史'), null);
 });
 
-test('does not reserve natural-language session operations or legacy aliases locally', () => {
-  assert.equal(parseBridgeCommand('菜单'), null);
+test('does not reserve natural-language session operations locally', () => {
   assert.equal(parseBridgeCommand('新建 /workspace/project'), null);
   assert.equal(parseBridgeCommand('切换 2'), null);
-  assert.equal(parseBridgeCommand('控制：帮我切换'), null);
-  assert.equal(parseBridgeCommand('控制A 帮我切换'), null);
   assert.equal(parseBridgeCommand('/status'), null);
-  assert.equal(parseBridgeCommand('/stop'), null);
-  assert.equal(parseBridgeCommand('/exit'), null);
-  assert.equal(parseBridgeCommand('/help'), null);
-  assert.equal(parseBridgeCommand('/ctrl 帮我切换'), null);
-  assert.equal(parseBridgeCommand('/new /workspace/project'), null);
-  assert.equal(parseBridgeCommand('/sessions'), null);
-  assert.equal(parseBridgeCommand('/状态'), null);
-  assert.equal(parseBridgeCommand('/取消'), null);
-  assert.equal(parseBridgeCommand('/raw hello'), null);
-  assert.equal(parseBridgeCommand('项目里的帅哥变量'), null);
+  assert.equal(parseBridgeCommand('项目里的小微变量'), null);
 });

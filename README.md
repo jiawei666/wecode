@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/github/license/jiawei666/wecode)](LICENSE)
 
-在微信里使用本机 Codex。普通消息进入当前 Codex 会话；需要新建、切换或恢复会话时，用自然语言告诉 wecode；长回答自动生成适合手机阅读的临时分享页。
+在微信里使用本机 Codex。需要新建、切换或查找会话时，呼唤“小微”；接入会话后，普通消息直接进入当前 Codex；长回答自动生成适合手机阅读的临时分享页。
 
 > [!WARNING]
 > wecode 会以 `approval_policy=never` 和 `danger-full-access` 驱动本机 Codex。请只在你完全信任的机器和微信账号上运行。
@@ -12,8 +12,9 @@
 ## 特点
 
 - Codex App Server 保存原生会话历史，wecode 只保存本地绑定和运行状态。
-- 手机上管理项目会话：新建、切换、恢复、停止和查看状态。
+- 通过“小微”管理项目会话：列出最近 5 个、按项目查找或新建、回复序号切换。
 - 微信图片会作为图片输入交给当前 Codex 会话；微信文件会下载到本机，并把本地路径交给 Codex 读取。
+- 长任务期间显示微信原生“正在输入”状态，不再额外发送“已发送，执行中……”占位消息。
 - 长文案自动转成移动端网页，可选 Cloudflare Quick Tunnel 生成临时链接。
 
 ## 架构
@@ -26,10 +27,10 @@ wecode（本机桥接层，登录后自动后台运行）
  ├─ 普通消息（有会话） ─────► Codex App Server ─► Codex 原生 threads
  ├─ 图片/文件（有会话） ────► 下载并解密 ───────► 当前 Codex 会话
  ├─ 普通消息（无会话） ─────► 自动进入会话管理 Agent
- ├─ “帅哥，帮我……” ───────► 已有会话时进入会话管理 Agent
- ├─ “帅哥，进入本机维护模式……” ► 会话管理 Agent 直接执行本机维护
+ ├─ “小微，帮我……” ───────► 中断当前 Codex 任务并进入会话管理 Agent
+ ├─ “小微，进入本机维护模式……” ► 会话管理 Agent 直接执行本机维护
  ├─ status / login / restart / stop / logs ─► 后台进程管理
- ├─ 状态 / 停止 / 退出 / 帮助 ─► 本地确定性操作
+ ├─ 状态 / 停止 / 退出 ─► 本地确定性操作
  └─ 长回答
       ├─ 本地临时 Markdown 页面
       └─ cloudflared Quick Tunnel（可选）► trycloudflare.com 临时链接
@@ -103,21 +104,34 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 | --- | --- |
 | `状态` | 查看当前会话、任务和队列 |
 | `停止` | 中断当前任务并清空队列 |
-| `分叉` / `复制会话` | 从当前会话复制已保存历史并新建对话 |
 | `退出` | 退出当前会话管理流程；没有管理流程时解除当前 wecode 会话绑定，外部 Desktop 锁需在 Desktop 中释放 |
-| `帮助` | 查看会话管理帮助 |
-| `列出会话` / `会话列表` | 快速列出最近 20 个会话，不启动会话管理 Agent |
-| `列出最近 5 个会话` | 快速列出指定数量的最近会话（最多 20 个） |
-| `查看活动` / `查看活动会话` | 只读查看正在处理的 Codex 任务，不接管会话 |
-| `查看最近任务` | 只读查看最近 Codex 任务，不绑定会话 |
-| `帅哥，帮我……` | 已有会话时进入会话管理模式 |
-| `帅哥，进入本机维护模式……` | 在当前管理会话中直接使用终端、文件和进程权限维护本机 wecode；完成后仍复用同一管理会话 |
+| `小微` | 中断当前 Codex 任务，直接列出全局最近 5 个会话；回复序号即可切换到对应历史会话 |
+| `小微，帮我查找……` | 按自然语言指定项目并查找该项目的历史会话 |
+| `小微，帮我新建……` | 按自然语言指定项目并新建会话 |
+| `小微，进入本机维护模式……` | 在当前管理会话中直接使用终端、文件和进程权限维护本机 wecode；完成后仍复用同一管理会话 |
 
 ## 使用
 
 扫码登录后，wecode 有两种工作模式。
 
-首次收到消息时会发送一次欢迎语，之后不再重复。
+首次收到消息时会发送一次欢迎语，之后不再重复：
+
+```text
+👋 欢迎使用 wecode
+
+小微是你的会话管理助手。想继续已有会话，或在不同项目中新建会话，都可以先呼唤「小微」。
+
+成功接入会话后，直接发送消息就能和 Codex 对话；之后需要切换或新建会话时，再呼唤「小微」即可。
+
+你可以这样说：
+• 「小微」：查看最近 5 个会话，回复序号直接切换
+• 「小微，在 wecode 项目新建会话」
+• 「小微，查找 Rambo 最近的会话」
+• 「小微，进入本机维护模式」
+
+常用命令：状态｜停止｜退出
+语音输入说成“小薇”“小威”等也能识别。
+```
 
 ### 普通会话模式
 
@@ -125,40 +139,38 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 
 ### 会话管理模式
 
-用于查找、新建、切换、恢复和退出会话：
+用于查找和新建会话。交互只保留一层列表，不先选项目、再选会话：
 
 - 没有当前会话：发送普通消息会进入会话管理模式，并继续处理这条消息。
-- 已有当前会话：使用唤醒词进入管理模式，例如：
-- `分叉` / `复制会话` 是桥接层提供的固定快捷命令，直接复制当前会话；需要从历史列表中选择目标时，使用自然语言交给会话管理 Agent。
-- 会话管理 Agent 会先判断是否需要历史 catalog；只有明确查找、列出、切换、恢复或选择历史会话时，系统才读取 catalog。
+- 已有当前会话：发送“小微”进入管理模式；如果当前有 Codex 任务正在回复，会先中断该任务并清空排队消息。
+- 裸唤醒后直接列出全局最近 5 个会话，再按项目分组；列表只有一层，回复序号即可切换。
+- wecode 启动时会从 Codex App Server 历史会话的 `cwd` 建立项目索引；每次唤醒、自然语言查找和新建会话后都会刷新。
+- 指定项目时优先从历史项目索引匹配 `cwd`，索引没有匹配才检查配置的项目搜索根目录。
+- 语音转文字兼容“小薇、小威、小唯、小伟、小巍、晓微”等常见同音写法。
+- 会话管理 Agent 只负责解释意图、按项目查找会话、按项目新建会话和本机维护；不再直接切换会话或维护备注。
 
 ```text
-帅哥，帮我在 wecode 项目新建一个会话
+小微，帮我在 wecode 项目新建一个会话
 ```
 
 会话管理示例：
 
 ```text
-帅哥，帮我查找 wecode 项目最近的 5 个会话
-靓仔，帮我切换到刚才那个会话
-小哥哥，帮我恢复昨天的支付接口会话
-分叉
+小微，帮我查找 wecode 项目最近的 5 个会话
+小威，帮我在 Rambo 项目新建一个会话
 ```
 
 如果远程控制导致本机服务不可用，可以直接发送：
 
 ```text
-帅哥，进入本机维护模式。请检查 wecode 当前版本，重新打包并重启服务，验证日志和进程。
+小微，进入本机维护模式。请检查 wecode 当前版本，重新打包并重启服务，验证日志和进程。
 ```
 
 维护模式已经使用 wecode 为控制 Agent 配置的本机终端权限。它不会因为进入维护模式主动重建会话管理 Agent；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。如果本机 Codex 提示由 wecode 使用过的会话仍被占用，先执行 `wecode restart`；新版会在释放最后一个绑定时回收本实例启动的 App Server，并在停止 wecode 时结束同一进程组里的 App Server。退出绑定时也会主动停止原生仍在运行的 turn。
 
 Codex 的用户可见 commentary/preamble（例如“我先查看两张截图……”）会合并后发送到微信，不添加“思路摘要”或“处理提示”前缀；内部 reasoning summary 不转发，任务完成后的最终回复会单独发送。需要调整 Codex 生成的摘要级别时，可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
-发送“分叉”或“复制会话”会通过 Codex App Server 复制当前会话的已保存历史，创建并绑定一个新会话；原会话不会被关闭。确认接管时，wecode 会先尝试中断活动 turn；若外部 Codex 客户端仍持有 thread 锁，会尝试结束准确的锁持有进程，这可能关闭本地 Codex Desktop 的会话进程。锁仍无法释放时会自动复制已保存历史并创建新会话。正在生成中的未完成回复不会复制。
-发送“列出会话”或“会话列表”会走快速通道，直接读取最近 20 个会话；列表显示后直接回复序号（如 `2`）即可快速切换，也兼容“第 2 个”。
-发送“查看活动”或“查看最近任务”会走只读通道，只调用会话列表和读取接口查看任务状态、计划、命令执行、文件修改或工具调用摘要，不会恢复、接管或绑定目标会话。
-新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出`、`帮助` 可以直接使用。
+项目有重名时，会话管理 Agent 会要求更具体的项目名或路径，不会在多个目录之间猜。新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出` 可以直接使用。
 
 ## 长文案与 Cloudflare 临时链接
 
@@ -251,7 +263,7 @@ wecode 默认请求 Codex 生成 `detailed` reasoning summary；其中用户可�
 
 - `wecode` 无法识别：源码目录执行 `npm link`；如果刚安装了 Node.js 或 cloudflared，重新打开 PowerShell，再执行 `wecode restart`。
 - `codex: command not found`：先确认 Codex CLI 已安装，并且 `codex --version` 可执行。
-- 不需要 `/sessions`、`/use`：直接发送“列出会话”，再回复序号（如 `2`）即可快速切换；复杂条件仍可用自然语言描述。
+- 不需要 `/sessions`、`/use`：发送“小微”后会直接列出最近 5 个会话，再回复序号即可切换。
 - `node:events ... Unhandled 'error' event`：通常是子进程命令不存在；重新运行 Windows 一键安装脚本，确认 `codex --version` 和 `cloudflared --version` 后再执行 `wecode restart`。
 - 后台启动后没有响应：执行 `wecode status` 和 `wecode logs` 查看进程与错误日志。
 - 微信发送日志出现 `prepare failed`：通常是长任务结束时使用的 `context_token` 已过期，不等同于发送频率过高；wecode 会保留未送达的最终结果，收到下一条消息刷新 token 后优先发送。
@@ -259,7 +271,7 @@ wecode 默认请求 Codex 生成 `detailed` reasoning summary；其中用户可�
 - `reasoning_effort must not be empty`：wecode 不会向 Codex 发送空的 `model_reasoning_effort`；如果仍出现，执行 `wecode restart` 后查看最新日志。
 - `timeout waiting for child process to exit`：这是 Codex App Server 刷新模型列表的外部警告；不影响已能使用的会话，先执行 `wecode restart`，持续出现时升级 Codex CLI。
 - 本机 Codex 提示会话被 wecode 占用：先在微信发送 `退出`释放当前绑定；如果需要停止后台 wecode，执行 `wecode stop`，再在本机执行 `codex resume`。如果仍被占用，执行 `wecode logs` 查看是否有 `stale App Server` 或 `thread-store conflict`。
-- `已在另一个应用中打开` 或接管失败：确认接管会尝试结束持有 thread 锁的外部进程；如果仍失败，完全退出 Desktop（包括托盘）后重试，或发送 `分叉` / `复制会话`。
+- `已在另一个应用中打开` 或接管失败：确认接管会尝试结束持有 thread 锁的外部进程；如果仍失败，完全退出 Desktop（包括托盘）后重试。
 - 二维码过期：重新执行 `wecode login`。
 - 发现 `~/.cloudflared/config.yaml` 后 Quick Tunnel 无法启动：按照 [Cloudflare 说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) 暂时移开该配置文件。
 

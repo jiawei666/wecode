@@ -111,6 +111,9 @@ async function runBridge(config: ReturnType<typeof loadConfig>, store: StateStor
   try {
     const token = store.get().token;
     const ilink = new IlinkClient({ ...config, apiBase: store.get().baseUrl || config.apiBase }, token);
+    const typingUser = store.get().scannedUser.trim();
+    const typingContext = typingUser ? store.get().contextTokens[typingUser] ?? '' : '';
+    if (typingContext) void ilink.prepareTyping(typingUser, typingContext);
     const appServer = new CodexAppServer(config);
     let bridge: BridgeApp | undefined;
     const sessions = new SessionManager(
@@ -125,6 +128,7 @@ async function runBridge(config: ReturnType<typeof loadConfig>, store: StateStor
       },
     );
     bridge = new BridgeApp(config, store, ilink, sessions);
+    await bridge.initialize();
 
     let stopping = false;
     const stop = async () => {

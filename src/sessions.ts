@@ -155,13 +155,13 @@ export class SessionManager {
     return { binding };
   }
 
-  async list(cwd?: string, limit = MAX_SESSION_LIST_RESULTS): Promise<ThreadSummary[]> {
+  async list(cwd?: string, limit = MAX_SESSION_LIST_RESULTS, fresh = false): Promise<ThreadSummary[]> {
     const normalizedCwd = cwd?.trim() || '';
     const normalizedLimit = Number.isInteger(limit) && limit > 0
       ? Math.min(limit, MAX_SESSION_LIST_RESULTS)
       : MAX_SESSION_LIST_RESULTS;
     const key = [normalizedCwd, normalizedLimit].join('|');
-    const cached = this.sessionListCache.get(key);
+    const cached = fresh ? undefined : this.sessionListCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return [...cached.value];
 
     const value = (await this.appServer.listThreads(normalizedCwd || undefined, normalizedLimit))

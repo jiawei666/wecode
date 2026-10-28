@@ -48,89 +48,61 @@ test('omits a null service tier and reports the signal that ended the control Ag
 test('allows explicit local maintenance mode without resetting the control session', () => {
   const instructions = controlInstructions('/workspace', ['/workspace/projects']);
   assert.match(instructions, /本机维护模式/);
-  assert.match(instructions, /终端、文件和进程工具/);
-  assert.match(instructions, /不要主动清除或重建会话管理 Agent 的 Codex 会话/);
-  assert.match(instructions, /action=reply/);
-  assert.match(instructions, /查看最近任务/);
-  assert.match(instructions, /只读查看/);
-  assert.match(instructions, /不要写成长段/);
+  assert.match(instructions, /终端和文件工具/);
+  assert.match(instructions, /用 reply 汇报/);
+  assert.match(instructions, /历史项目索引/);
+  assert.match(instructions, /不要返回会话 thread_id/);
+  assert.doesNotMatch(instructions, /分叉|复制历史/);
 });
 
 test('keeps the control schema within Codex structured-output support', async () => {
   const schema = JSON.parse(await readFile(new URL('../schemas/control-action.json', import.meta.url), 'utf8')) as Record<string, unknown>;
   assert.equal('allOf' in schema, false);
-  assert.deepEqual(schema.required, [
-    'action',
-    'cli',
-    'cwd',
-    'thread_id',
-    'limit',
-    'text',
-    'title',
-    'model',
-    'reasoning_effort',
-    'fast',
-    'takeover',
-    'note',
-    'presentation',
-    'reason',
-  ]);
+  assert.deepEqual(schema.required, ['action', 'cwd', 'limit', 'text']);
   const properties = schema.properties as { action?: { enum?: string[] } };
-  assert.ok(properties.action?.enum?.includes('request_catalog'));
+  assert.deepEqual(properties.action?.enum, ['new_session', 'list_sessions', 'reply', 'ask']);
 });
 
 test('validates required fields for control actions after schema parsing', () => {
   assert.deepEqual(parseAction('{"action":"ask","text":"需要目录"}'), { action: 'ask', text: '需要目录' });
-  assert.deepEqual(parseAction('{"action":"request_catalog"}'), { action: 'request_catalog' });
-  assert.deepEqual(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":5,"text":"## 最近 5 个会话"}'), {
+  assert.deepEqual(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":5,"text":null}'), {
     action: 'list_sessions',
     cwd: '/workspace/core',
     limit: 5,
-    text: '## 最近 5 个会话',
   });
-  assert.deepEqual(parseAction('{"action":"list\\_sessions","cwd":null,"limit":6,"text":"## 最近 6 个会话"}'), {
+  assert.deepEqual(parseAction('{"action":"list\\_sessions","cwd":null,"limit":6,"text":null}'), {
     action: 'list_sessions',
     limit: 6,
-    text: '## 最近 6 个会话',
   });
-  assert.deepEqual(parseAction('{"action":"fork_session","thread_id":"source-thread"}'), {
-    action: 'fork_session',
-    thread_id: 'source-thread',
+  assert.deepEqual(parseAction('{"action":"new_session","cwd":"/workspace/core","limit":null,"text":null}'), {
+    action: 'new_session',
+    cwd: '/workspace/core',
   });
-  assert.equal(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":0,"text":"列表"}'), null);
+  assert.equal(parseAction('{"action":"list_sessions","cwd":"/workspace/core","limit":0,"text":null}'), null);
   assert.equal(parseAction('{"action":"new_session"}'), null);
+  assert.equal(parseAction('{"action":"switch_session","thread_id":"thread"}'), null);
+  assert.equal(parseAction('{"action":"fork_session","thread_id":"thread"}'), null);
   assert.equal(parseAction('{"action":"raw_input","text":"hello"}'), null);
   assert.equal(parseAction('{"action":"unknown"}'), null);
 });
 
-test('rejects a session list without a limit or display text', () => {
-  assert.equal(parseAction('{"action":"list_sessions","cwd":null,"text":"列表"}'), null);
-  assert.equal(parseAction('{"action":"list_sessions","cwd":null,"limit":5}'), null);
+test('allows list requests without a model-generated display body', () => {
+  assert.deepEqual(parseAction('{"action":"list_sessions","cwd":null,"limit":5,"text":null}'), {
+    action: 'list_sessions',
+    limit: 5,
+  });
 });
 
 test('accepts nullable optional fields emitted by the structured action schema', () => {
   const raw = JSON.stringify({
     action: 'list_sessions',
-    cli: 'codex',
     cwd: '/home/yuanjiawei/AIProject/wecode',
-    thread_id: null,
     limit: 5,
-    text: '1. wecode · 摘要 · 2026-08-19 14:09',
-    title: null,
-    model: null,
-    reasoning_effort: null,
-    fast: null,
-    takeover: null,
-    note: null,
-    presentation: 'chat',
-    reason: null,
+    text: null,
   });
   assert.deepEqual(parseAction(raw), {
     action: 'list_sessions',
-    cli: 'codex',
     cwd: '/home/yuanjiawei/AIProject/wecode',
     limit: 5,
-    text: '1. wecode · 摘要 · 2026-08-19 14:09',
-    presentation: 'chat',
   });
 });

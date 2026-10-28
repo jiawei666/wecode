@@ -71,30 +71,10 @@ export interface BotState {
 }
 
 export interface ActionResponse {
-  action:
-    | 'request_catalog'
-    | 'new_session'
-    | 'switch_session'
-    | 'fork_session'
-    | 'list_sessions'
-    | 'status'
-    | 'interrupt'
-    | 'set_note'
-    | 'reply'
-    | 'ask';
-  cli?: CliKind;
+  action: 'new_session' | 'list_sessions' | 'reply' | 'ask';
   cwd?: string;
-  thread_id?: string;
   limit?: number;
   text?: string;
-  title?: string;
-  model?: string;
-  reasoning_effort?: string;
-  fast?: boolean;
-  takeover?: boolean;
-  note?: string;
-  presentation?: PresentationMode;
-  reason?: string;
 }
 
 export interface TurnResult {

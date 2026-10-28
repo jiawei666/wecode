@@ -23,6 +23,7 @@ test('stops a detached Wecode process group so its App Server child releases the
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wecode-daemon-stop-'));
   const daemonScript = path.join(directory, 'wecode-daemon-fixture.js');
   const childPidFile = path.join(directory, 'app-server.pid');
+  const childReadyFile = path.join(directory, 'app-server.ready');
   const childStoppedFile = path.join(directory, 'app-server.stopped');
   const config = { ...loadConfig(), dataDir: directory };
   let daemon: ReturnType<typeof spawn> | undefined;
@@ -34,6 +35,7 @@ test('stops a detached Wecode process group so its App Server child releases the
         fs.writeFileSync(${JSON.stringify(childStoppedFile)}, 'stopped');
         process.exit(0);
       });
+      fs.writeFileSync(${JSON.stringify(childReadyFile)}, 'ready');
       setInterval(() => {}, 1000);
     `;
     await writeFile(daemonScript, `
@@ -56,6 +58,12 @@ test('stops a detached Wecode process group so its App Server child releases the
     }
     const childPid = Number(childPidText);
     assert.ok(Number.isInteger(childPid) && childPid > 0, 'fixture App Server child should start');
+    let childReady = false;
+    for (let attempt = 0; attempt < 100 && !childReady; attempt += 1) {
+      await access(childReadyFile).then(() => { childReady = true; }, () => undefined);
+      if (!childReady) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(childReady, true, 'fixture App Server child should register its signal handler');
     await writeFile(daemonPaths(config).pidFile, JSON.stringify({ pid: daemonPid }));
 
     assert.equal(await stopDaemon(config), true);

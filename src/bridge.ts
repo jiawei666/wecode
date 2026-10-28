@@ -1,5 +1,5 @@
 import type { AppConfig } from './config.js';
-import { HELP_TEXT, QUICK_GUIDE_TEXT, SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
+import { SESSION_ACTIVE_HINT, WELCOME_TEXT, parseBridgeCommand } from './commands.js';
 import { ControlAgent } from './control.js';
 import type { InboundAttachment, InboundMessage, IlinkClient } from './ilink.js';
 import type {
@@ -14,14 +14,11 @@ import type {
   SessionLaunchOptions,
   TurnProgress,
   ThreadSummary,
-  ThreadItemSummary,
-  ThreadSnapshot,
-  ThreadTurnSummary,
   TurnResult,
 } from './model.js';
 import { renderResponse, PagePublisher } from './render.js';
 import { formatModel, formatTimestamp, normalizeTimestamp } from './session-display.js';
-import { SessionManager, SessionOccupiedError, type SessionInspection } from './sessions.js';
+import { SessionManager, SessionOccupiedError } from './sessions.js';
 import { StateStore } from './state.js';
 
 interface TurnProgressBuffer {
@@ -31,11 +28,21 @@ interface TurnProgressBuffer {
   flushing?: Promise<unknown>;
 }
 
+interface TypingIndicator {
+  contextToken: string;
+  timer?: NodeJS.Timeout;
+  running?: Promise<boolean>;
+  stopped: boolean;
+}
+
 const PENDING_REPLY_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000] as const;
 const TURN_PROGRESS_FLUSH_DELAY_MS = 3_000;
 const TURN_PROGRESS_FLUSH_LENGTH = 900;
-const CONTROL_PROGRESS_DELAY_MS = 1_500;
-const QUICK_SESSION_LIST_LIMIT = 20;
+const TYPING_KEEPALIVE_MS = 5_000;
+const DEFAULT_SESSION_LIST_LIMIT = 5;
+const MAX_SESSION_LIST_LIMIT = 20;
+const HISTORY_INDEX_LIMIT = 500;
+const HISTORY_CONTEXT_SESSION_LIMIT = 20;
 const QUICK_SESSION_LIST_TTL_MS = 10 * 60_000;
 
 interface QuickSessionList {
@@ -48,6 +55,13 @@ interface QuickSessionList {
 interface PendingCodexTurn {
   text: string;
   imagePaths: string[];
+}
+
+interface HistoryProject {
+  cwd: string;
+  name: string;
+  lastUpdatedAt: number;
+  sessionCount: number;
 }
 
 function codexTurnForMessage(text: string, attachments: InboundAttachment[]): PendingCodexTurn {
@@ -93,6 +107,9 @@ export class BridgeApp {
   private readonly turnProgress = new Map<string, TurnProgressBuffer>();
   private readonly progressReplyChains = new Map<string, Promise<void>>();
   private readonly quickSessionLists = new Map<string, QuickSessionList>();
+  private readonly typingIndicators = new Map<string, TypingIndicator>();
+  private historySessions: ThreadSummary[] = [];
+  private historyProjects: HistoryProject[] = [];
 
   constructor(
     private readonly config: AppConfig,
@@ -118,6 +135,7 @@ export class BridgeApp {
       if (progress.timer) clearTimeout(progress.timer);
     }
     this.turnProgress.clear();
+    await Promise.all([...this.typingIndicators.keys()].map((userId) => this.stopTyping(userId)));
     for (const timer of this.pendingReplyTimers.values()) clearTimeout(timer);
     this.pendingReplyTimers.clear();
     await this.controlAgent.close();
@@ -125,6 +143,14 @@ export class BridgeApp {
     await this.sessions.close();
     await this.store.save();
     this.quickSessionLists.clear();
+    this.historySessions = [];
+    this.historyProjects = [];
+  }
+
+  async initialize(): Promise<void> {
+    await this.refreshHistoryIndex().catch((error) => {
+      process.stderr.write(`[history] 启动时建立历史项目索引失败：${errorMessage(error)}\n`);
+    });
   }
 
   async handle(message: InboundMessage): Promise<void> {
@@ -154,6 +180,7 @@ export class BridgeApp {
       await this.handleInternal(message);
     } catch (error) {
       process.stderr.write(`[bridge] message handling failed: ${errorMessage(error)}\n`);
+      await this.stopTyping(message.from);
       if (error instanceof SessionOccupiedError) {
         await this.offerTakeover(message.from, error).catch(() => undefined);
         return;
@@ -177,20 +204,33 @@ export class BridgeApp {
       });
       this.awaitingFreshContext.delete(userId);
     }
-    await this.flushPendingReplies(userId, Boolean(message.contextToken));
-    if (this.store.seen(`${userId}|${message.messageId}|${message.timeMs}`)) return;
-
     const text = message.text.trim();
     const attachments = message.attachments;
+    const command = parseBridgeCommand(text);
+    const earlyBinding = this.store.getBinding(userId);
+    const quickSelection = !command && this.quickSessionLists.has(userId)
+      && /^(?:(?:切换(?:到)?|使用|打开)\s*)?(?:第\s*)?\d+(?:\s*个)?(?:会话)?$/u.test(text);
+    const missingBindingForAttachment = attachments.length > 0 && !earlyBinding;
+    const unboundSkillDocument = !earlyBinding && !this.store.getControl(userId) && looksLikeSkillDocument(text);
+    const startsThinking = Boolean(text || attachments.length)
+      && (!command || command.kind === 'control')
+      && !quickSelection
+      && !missingBindingForAttachment
+      && !unboundSkillDocument;
+    if (startsThinking) this.startTyping(userId);
+    await this.flushPendingReplies(userId, Boolean(message.contextToken));
+    if (this.store.seen(`${userId}|${message.messageId}|${message.timeMs}`)) {
+      if (startsThinking) await this.stopTyping(userId);
+      return;
+    }
+
     if (!text && attachments.length === 0) {
       await this.sendPendingWelcome(userId);
       return;
     }
 
-    const existingBinding = this.store.getBinding(userId);
-    if (existingBinding) this.store.setBinding(userId, { ...existingBinding, lastActivityAt: Date.now() });
+    if (earlyBinding) this.store.setBinding(userId, { ...earlyBinding, lastActivityAt: Date.now() });
 
-    const command = parseBridgeCommand(text);
     const expired = this.controlExpired(userId);
     if (expired) this.store.clearControl(userId);
     const automaticManagement = !command && !this.store.getControl(userId) && !this.store.getBinding(userId);
@@ -204,34 +244,23 @@ export class BridgeApp {
       await this.stop(userId);
       return;
     }
-    if (command?.kind === 'fork') {
-      await this.forkCurrent(userId);
-      return;
-    }
-    if (command?.kind === 'guide') {
-      this.quickSessionLists.delete(userId);
-      await this.reply(userId, QUICK_GUIDE_TEXT);
-      return;
-    }
-
-    if (command?.kind === 'help') {
-      await this.reply(userId, HELP_TEXT);
-      return;
-    }
     if (command?.kind === 'status') {
       await this.sendStatus(userId);
       return;
     }
-    if (command?.kind === 'list_sessions') {
-      await this.listSessions(userId, command.limit);
-      return;
-    }
-    if (command?.kind === 'inspect_sessions') {
-      await this.inspectSessions(userId, command.limit, command.activeOnly);
-      return;
-    }
     if (command?.kind === 'control' && attachments.length === 0) {
-      await this.handleControl(userId, command.text);
+      await this.stopBeforeSwitch(userId);
+      if (command.text) {
+        await this.handleControl(userId, command.text);
+        return;
+      }
+      await this.ensureControl(userId);
+      this.startTyping(userId);
+      try {
+        await this.showDefaultSessionList(userId);
+      } finally {
+        await this.stopTyping(userId);
+      }
       return;
     }
 
@@ -240,33 +269,6 @@ export class BridgeApp {
       await this.switchToQuickSession(userId, selected);
       return;
     }
-    if (!command && !this.quickSessionLists.has(userId)) {
-      if (text === '1') {
-        await this.inspectSessions(userId, 5, false);
-        return;
-      }
-      if (text === '2') {
-        await this.sendStatus(userId);
-        return;
-      }
-      if (text === '3') {
-        await this.handleControl(userId, '新建会话');
-        return;
-      }
-      if (text === '4') {
-        await this.handleControl(userId, '切换会话');
-        return;
-      }
-      if (text === '5') {
-        await this.listSessions(userId, 5);
-        return;
-      }
-      if (text === '6') {
-        await this.forkCurrent(userId);
-        return;
-      }
-    }
-
     const binding = this.store.getBinding(userId);
     if (attachments.length) {
       const turn = codexTurnForMessage(command?.kind === 'control' ? command.text : text, attachments);
@@ -274,10 +276,12 @@ export class BridgeApp {
         (attachment.kind === 'image' || attachment.kind === 'file') && attachment.path,
       );
       if (!hasForwardableAttachment) {
+        await this.stopTyping(userId);
         await this.reply(userId, '目前只支持转发图片和文件；附件下载失败时请重新发送。');
         return;
       }
       if (!binding) {
+        await this.stopTyping(userId);
         await this.reply(userId, '当前没有绑定的 Codex 会话，无法转发附件。请先新建或切换到一个会话，再重新发送图片或文件。');
         return;
       }
@@ -295,6 +299,7 @@ export class BridgeApp {
     }
 
     if (!binding && !this.store.getControl(userId) && looksLikeSkillDocument(text)) {
+      await this.stopTyping(userId);
       await this.reply(
         userId,
         '检测到这是一段技能/规则文档，不是会话管理指令。当前没有绑定 Codex 会话，请先发送“新建会话”并指定项目目录，或先切换会话；绑定后再发送这段内容。',
@@ -313,33 +318,107 @@ export class BridgeApp {
     requestedLimit: number,
     cwd?: string,
     showProgress = true,
+    forceRefresh = false,
   ): Promise<void> {
-    const limit = Math.min(Math.max(Math.floor(requestedLimit) || QUICK_SESSION_LIST_LIMIT, 1), QUICK_SESSION_LIST_LIMIT);
+    const limit = Math.min(
+      Math.max(Math.floor(requestedLimit) || DEFAULT_SESSION_LIST_LIMIT, 1),
+      MAX_SESSION_LIST_LIMIT,
+    );
     const normalizedCwd = cwd?.trim() || undefined;
     const cached = this.quickSessionLists.get(userId);
     let sessions: ThreadSummary[];
-    if (cached && cached.expiresAt > Date.now() && cached.limit >= limit && cached.cwd === normalizedCwd) {
+    if (!forceRefresh && cached && cached.expiresAt > Date.now() && cached.limit >= limit && cached.cwd === normalizedCwd) {
       sessions = cached.sessions.slice(0, limit);
     } else {
       if (showProgress) await this.reply(userId, '正在读取最近会话……');
-      sessions = (await this.sessions.list(normalizedCwd, limit))
-        .sort((left, right) => (normalizeTimestamp(right.updatedAt) ?? 0) - (normalizeTimestamp(left.updatedAt) ?? 0))
-        .slice(0, limit);
-      this.quickSessionLists.set(userId, {
-        expiresAt: Date.now() + QUICK_SESSION_LIST_TTL_MS,
-        limit,
-        cwd: normalizedCwd,
-        sessions: [...sessions],
-      });
+      sessions = orderSessionsForDisplay(
+        (await this.sessions.list(normalizedCwd, limit, true))
+          .sort((left, right) => (normalizeTimestamp(right.updatedAt) ?? 0) - (normalizeTimestamp(left.updatedAt) ?? 0))
+          .slice(0, limit),
+      );
+      this.cacheSessionList(userId, sessions, limit, normalizedCwd);
     }
     await this.reply(userId, formatQuickSessionList(sessions));
   }
 
-  private async inspectSessions(userId: string, requestedLimit: number, activeOnly: boolean): Promise<void> {
-    const limit = Math.min(Math.max(Math.floor(requestedLimit) || 5, 1), 20);
-    await this.reply(userId, activeOnly ? '正在读取活动任务（只读）……' : '正在读取最近任务（只读）……');
-    const inspections = await this.sessions.inspect(limit, activeOnly);
-    await this.reply(userId, formatSessionInspectionList(inspections, activeOnly));
+  private async showDefaultSessionList(userId: string): Promise<void> {
+    await this.refreshHistoryIndex().catch((error) => {
+      process.stderr.write(`[history] 唤醒时刷新历史项目索引失败：${errorMessage(error)}\n`);
+    });
+    await this.showIndexedSessions(userId, DEFAULT_SESSION_LIST_LIMIT);
+  }
+
+  private async showIndexedSessions(userId: string, requestedLimit: number): Promise<void> {
+    const limit = Math.min(
+      Math.max(Math.floor(requestedLimit) || DEFAULT_SESSION_LIST_LIMIT, 1),
+      MAX_SESSION_LIST_LIMIT,
+    );
+    const sessions = orderSessionsForDisplay(this.historySessions.slice(0, limit));
+    this.cacheSessionList(userId, sessions, limit, undefined);
+    await this.reply(userId, formatQuickSessionList(sessions));
+  }
+
+  private cacheSessionList(
+    userId: string,
+    sessions: ThreadSummary[],
+    limit: number,
+    cwd?: string,
+  ): void {
+    this.quickSessionLists.set(userId, {
+      expiresAt: Date.now() + QUICK_SESSION_LIST_TTL_MS,
+      limit,
+      cwd,
+      sessions: [...sessions],
+    });
+  }
+
+  private async refreshHistoryIndex(): Promise<void> {
+    const sessions = await this.sessions.list(undefined, HISTORY_INDEX_LIMIT, true);
+    this.historySessions = [...sessions]
+      .sort((left, right) => (normalizeTimestamp(right.updatedAt) ?? 0) - (normalizeTimestamp(left.updatedAt) ?? 0));
+    const projects = new Map<string, HistoryProject>();
+    for (const session of this.historySessions) {
+      const cwd = session.cwd?.trim();
+      if (!cwd) continue;
+      const updatedAt = normalizeTimestamp(session.updatedAt) ?? 0;
+      const current = projects.get(cwd);
+      if (current) {
+        current.sessionCount += 1;
+        current.lastUpdatedAt = Math.max(current.lastUpdatedAt, updatedAt);
+      } else {
+        projects.set(cwd, {
+          cwd,
+          name: sessionProjectName(session) || pathName(cwd),
+          lastUpdatedAt: updatedAt,
+          sessionCount: 1,
+        });
+      }
+    }
+    this.historyProjects = [...projects.values()]
+      .sort((left, right) => right.lastUpdatedAt - left.lastUpdatedAt);
+  }
+
+  private historyContext(): string {
+    const projects = this.historyProjects.slice(0, 100).map((project) => ({
+      project: project.name,
+      cwd: project.cwd,
+      session_count: project.sessionCount,
+      last_updated_at: formatTimestamp(project.lastUpdatedAt),
+    }));
+    const sessions = this.historySessions.slice(0, HISTORY_CONTEXT_SESSION_LIMIT).map((session) => ({
+      thread_id: session.id,
+      project: sessionProjectName(session) ?? null,
+      cwd: session.cwd ?? null,
+      name: session.name ?? null,
+      preview: session.preview ?? null,
+      updated_at: formatTimestamp(session.updatedAt),
+    }));
+    return [
+      `历史项目索引（来自 Codex App Server 历史会话 cwd，共 ${this.historyProjects.length} 个）：`,
+      JSON.stringify(projects),
+      `最近 ${sessions.length} 个历史会话：`,
+      JSON.stringify(sessions),
+    ].join('\n');
   }
 
   private takeQuickSessionSelection(userId: string, text: string): ThreadSummary | undefined {
@@ -379,38 +458,20 @@ export class BridgeApp {
       if (sent && welcomePending) this.markWelcomeSent();
     }
     if (!text.trim()) {
-      this.quickSessionLists.delete(userId);
-      await this.reply(userId, QUICK_GUIDE_TEXT, { source: 'control' });
+      await this.showDefaultSessionList(userId);
       return;
     }
 
     const current = this.store.getBinding(userId);
-    const previous = this.store.getBindingHistory(userId)[0];
     const currentContext = current
-      ? `当前绑定：cli=${current.cli ?? 'codex'}\nthread_id=${current.threadId}\ncwd=${current.cwd}\n本地备注=${current.note || this.store.getSessionNote(current.threadId) || '无'}\n模型=${formatModel(current.model, current.reasoningEffort, current.fast ? 'fast' : null)}`
+      ? `当前绑定：thread_id=${current.threadId}\ncwd=${current.cwd}`
       : '当前没有绑定的 Codex 会话。';
-    const previousContext = previous
-      ? `\n上一个绑定（用户说“返回上一个”时使用）：thread_id=${previous.threadId}\ncwd=${previous.cwd}`
-      : '';
-    const context = `${currentContext}${previousContext}`;
     const feedback = control.executionFeedback ? `\n上一次 wecode 系统执行结果：${control.executionFeedback}` : '';
     const pendingTakeover = control.pendingTakeover
-      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n目标状态=${control.pendingTakeover.running ? '有活动任务' : '未确认有活动任务'}\n只有用户明确回复“确认接管”“确定接管”或“继续接管”时，才允许对同一 thread_id 执行 takeover=true。确认后会先尝试中断活动 turn；若外部 Codex 客户端仍持有该 thread 锁，wecode 会尝试结束准确的锁持有进程后接管，这可能关闭本地 Codex Desktop 的会话进程；仍无法释放时会自动尝试分叉新会话。`
+      ? `\n待确认安全接管：thread_id=${control.pendingTakeover.threadId}\ncwd=${control.pendingTakeover.cwd}\n只有用户明确回复“确认接管”时，系统才会安全接管该目标。`
       : '';
-    const catalogState = shouldRefreshSessionCatalog(text)
-      ? '当前尚未加载原生会话 catalog；本条请求明确需要最新历史会话列表，请返回 request_catalog，禁止复用上一轮 catalog。'
-      : control.sessionId
-        ? '本轮未重新加载原生会话 catalog；如果之前的会话管理对话中已有适用 catalog，可以继续使用；否则返回 request_catalog。'
-        : '当前尚未加载原生会话 catalog；如果本条请求需要历史会话，请返回 request_catalog。';
-    const makePrompt = (catalog: string): string => `${text.trim()}\n\n[wecode 系统上下文]\n${context}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${catalog}`;
-    const prompt = makePrompt(catalogState);
 
-    // Entering management already sends a status message above. For an
-    // existing control conversation, only show a progress message when the
-    // Agent actually takes a while; fast requests should not produce a
-    // redundant "处理中……" message on every turn.
-    const enteredManagement = Boolean(automaticReason && !alreadyInControl);
-    const delayedProgress = enteredManagement ? undefined : this.scheduleControlProgress(userId);
+    this.startTyping(userId);
     try {
       if (control.pendingTakeover && isTakeoverConfirmation(text)) {
         const pending = control.pendingTakeover;
@@ -420,20 +481,11 @@ export class BridgeApp {
         this.store.clearControl(userId);
         return;
       }
-      let result = await this.controlAgent.run(userId, prompt, control.sessionId);
-      if (result.action.action === 'request_catalog') {
-        const requestSessionId = result.sessionId || control.sessionId;
-        this.store.setControl(userId, {
-          ...control,
-          ...(requestSessionId ? { sessionId: requestSessionId } : {}),
-          lastActivityAt: Date.now(),
-        });
-        const catalog = await this.controlCatalog().catch(() => '当前暂时无法读取原生会话列表，请自行扫描默认项目根目录。');
-        result = await this.controlAgent.run(userId, makePrompt(`原生会话 catalog 已加载，以下内容只供你筛选和生成展示文本，不能向用户暴露 thread_id：\n${catalog}`), requestSessionId);
-        if (result.action.action === 'request_catalog') {
-          throw new Error('会话管理 Agent 在 catalog 已加载后仍请求读取 catalog');
-        }
-      }
+      await this.refreshHistoryIndex().catch((error) => {
+        process.stderr.write(`[history] 会话管理前刷新历史项目索引失败：${errorMessage(error)}\n`);
+      });
+      const prompt = `${text.trim()}\n\n[wecode 系统上下文]\n${currentContext}\n默认搜索根目录：${this.config.searchRoots.join('、')}\n${feedback}${pendingTakeover}\n${this.historyContext()}`;
+      const result = await this.controlAgent.run(userId, prompt, control.sessionId);
       const sessionId = result.sessionId || this.store.getControl(userId)?.sessionId;
       const nextControl: ControlState = {
         sessionId,
@@ -444,17 +496,14 @@ export class BridgeApp {
       if (result.action.action === 'ask') {
         this.store.setControl(userId, nextControl);
         await this.reply(userId, result.action.text || '还需要一些信息。', {
-          title: result.action.title,
-          presentation: result.action.presentation,
-          cwd: current?.cwd,
           source: 'control',
         });
         return;
       }
 
       this.store.setControl(userId, nextControl);
-      await this.executeAction(userId, result.action, { allowTakeover: isTakeoverConfirmation(text) });
-      if (result.action.action === 'new_session' || result.action.action === 'switch_session' || result.action.action === 'fork_session') {
+      await this.executeAction(userId, result.action);
+      if (result.action.action === 'new_session') {
         this.store.clearControl(userId);
       }
     } catch (error) {
@@ -470,98 +519,39 @@ export class BridgeApp {
       if (latest) this.store.setControl(userId, { ...latest, lastActivityAt: Date.now(), executionFeedback: feedbackText });
       await this.reply(userId, `${feedbackText}\n可继续补充，或发送“退出”。`, { source: 'bridge' });
     } finally {
-      if (delayedProgress) await delayedProgress.cancel();
+      await this.stopTyping(userId);
     }
   }
 
-  private scheduleControlProgress(userId: string): { cancel: () => Promise<void> } {
-    let timer: NodeJS.Timeout | undefined;
-    let resolveDone!: () => void;
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve;
-    });
-    timer = setTimeout(() => {
-      timer = undefined;
-      void this.reply(userId, '处理中……').finally(resolveDone);
-    }, CONTROL_PROGRESS_DELAY_MS);
-    timer.unref();
-    return {
-      cancel: async () => {
-        if (timer) {
-          clearTimeout(timer);
-          timer = undefined;
-          resolveDone();
-        }
-        await done;
-      },
-    };
-  }
-
-  private async executeAction(userId: string, action: ActionResponse, options: { allowTakeover?: boolean } = {}): Promise<void> {
-    if (action.cli && action.cli !== 'codex') throw new Error('当前版本还未接入 Claude Code 适配器');
+  private async executeAction(userId: string, action: ActionResponse): Promise<void> {
     switch (action.action) {
-      case 'request_catalog':
-        throw new Error('会话管理 Agent 的 request_catalog 未在调用流程中处理');
       case 'new_session': {
         if (!action.cwd) throw new Error('新建会话缺少项目目录');
         await this.stopBeforeSwitch(userId);
         await this.reply(userId, '正在创建会话……');
-        const result = await this.sessions.create(userId, action.cwd, launchOptions(action));
+        const result = await this.sessions.create(userId, action.cwd);
         await this.reply(userId, this.sessionCreatedText(result.binding));
-        return;
-      }
-      case 'switch_session': {
-        if (!action.thread_id) throw new Error('切换会话缺少 thread_id');
-        const threadId = action.thread_id;
-        if (action.takeover) {
-          const pending = this.store.getControl(userId)?.pendingTakeover;
-          if (!options.allowTakeover || !pending || pending.threadId !== action.thread_id) {
-            // Only an exact bridge-level confirmation with a matching pending
-            // target can authorize takeover=true.
-            action = { ...action, takeover: false };
-          }
-        }
-        await this.stopBeforeSwitch(userId);
-        await this.reply(userId, '正在恢复会话……');
-        await this.useSession(userId, threadId, launchOptions(action), action.cwd, action.takeover === true);
-        return;
-      }
-      case 'fork_session': {
-        if (!action.thread_id) throw new Error('分叉会话缺少 thread_id');
-        await this.stopBeforeSwitch(userId);
-        await this.reply(userId, '正在分叉会话……');
-        await this.forkSession(userId, action.thread_id, launchOptions(action), action.cwd);
+        await this.refreshHistoryIndex().catch((error) => {
+          process.stderr.write(`[history] 新建会话后刷新历史项目索引失败：${errorMessage(error)}\n`);
+        });
         return;
       }
       case 'list_sessions':
-        if (!action.text?.trim()) throw new Error('会话列表缺少展示文本');
-        // Keep the exact sessions behind the rendered list so a following
-        // numeric reply is handled by the bridge instead of becoming a
-        // default shortcut such as "2" → status.
-        await this.listSessions(userId, action.limit ?? QUICK_SESSION_LIST_LIMIT, action.cwd, false);
+        if (action.cwd) {
+          await this.listSessions(
+            userId,
+            action.limit ?? DEFAULT_SESSION_LIST_LIMIT,
+            action.cwd,
+            false,
+            true,
+          );
+        } else {
+          await this.showIndexedSessions(userId, action.limit ?? DEFAULT_SESSION_LIST_LIMIT);
+        }
         return;
-      case 'status':
-        await this.sendStatus(userId);
-        return;
-      case 'interrupt': {
-        const stopped = await this.sessions.stop(userId);
-        await this.reply(userId, stopped ? '任务已停止。' : '当前没有运行中的任务。');
-        return;
-      }
-      case 'set_note': {
-        const note = action.note || action.text;
-        if (!note?.trim()) throw new Error('备注内容不能为空');
-        const binding = await this.sessions.setNote(userId, note);
-        await this.reply(userId, `已记录备注：${binding.note}`);
-        return;
-      }
       case 'reply':
       case 'ask':
-        await this.reply(userId, action.text || '会话管理操作已完成。', {
-          title: action.title,
-          presentation: action.presentation,
-          source: 'control',
-        });
+        await this.reply(userId, action.text || '会话管理操作已完成。', { source: 'control' });
         return;
     }
   }
@@ -579,36 +569,9 @@ export class BridgeApp {
     await this.reply(userId, this.switchedText(result.binding));
   }
 
-  private async forkSession(
-    userId: string,
-    identifier: string,
-    options: SessionLaunchOptions = {},
-    requestedCwd?: string,
-  ): Promise<void> {
-    if (identifier.startsWith('cc:')) throw new Error('当前版本还未接入 Claude Code 适配器');
-    const threadId = await this.sessions.resolveThreadId(identifier);
-    const result = await this.sessions.fork(userId, threadId, requestedCwd, options);
-    await this.reply(userId, this.forkedText(result.binding));
-  }
-
-  private async forkCurrent(userId: string): Promise<void> {
-    const binding = this.store.getBinding(userId);
-    const pending = this.store.getControl(userId)?.pendingTakeover;
-    const sourceThreadId = pending?.threadId || binding?.threadId;
-    const sourceCwd = pending?.cwd || binding?.cwd;
-    if (!sourceThreadId) {
-      await this.reply(userId, '当前没有可分叉的会话。');
-      return;
-    }
-    await this.stopBeforeSwitch(userId);
-    await this.reply(userId, '正在分叉当前会话……');
-    const result = await this.sessions.fork(userId, sourceThreadId, sourceCwd, pending ? {} : (binding ?? {}));
-    this.store.clearControl(userId);
-    await this.reply(userId, this.forkedText(result.binding));
-  }
-
   private async sendToTarget(userId: string, text: string, imagePaths: string[] = []): Promise<void> {
     const turn: PendingCodexTurn = { text, imagePaths };
+    this.startTyping(userId);
     const status = await this.sessions.status(userId);
     const pending = this.queued.get(userId)?.length ?? 0;
     if (status.running && !this.draining.has(userId) && pending === 0) {
@@ -639,7 +602,6 @@ export class BridgeApp {
       await this.handleControl(userId, text, 'no-session');
       return;
     }
-    await this.reply(userId, '已发送，执行中……');
   }
 
   async onTurn(result: TurnResult): Promise<void> {
@@ -656,6 +618,7 @@ export class BridgeApp {
       this.turnProgress.delete(progressKey);
       const progressChain = this.progressReplyChains.get(userId);
       if (progressChain) await progressChain;
+      await this.stopTyping(userId);
       let delivered = false;
       if (result.status === 'interrupted') delivered = await this.deliverFinalReply(userId, '任务已中断。');
       else if (result.status === 'failed') {
@@ -851,6 +814,7 @@ export class BridgeApp {
     if (!queue.length) this.queued.delete(userId);
     if (!next) return;
 
+    this.startTyping(userId);
     try {
       const result = await this.sessions.send(userId, next.text, next.imagePaths);
       if (!result.accepted) {
@@ -858,9 +822,8 @@ export class BridgeApp {
         await this.handleControl(userId, next.text, 'no-session');
         return;
       }
-      const remaining = this.queued.get(userId)?.length ?? 0;
-      await this.reply(userId, `已继续${remaining ? `，剩余 ${remaining} 条` : ''}。`);
     } catch (error) {
+      await this.stopTyping(userId);
       if (error instanceof SessionOccupiedError) {
         const rest = this.queued.get(userId) ?? [];
         this.queued.set(userId, [next, ...rest]);
@@ -901,6 +864,7 @@ export class BridgeApp {
     if (hasControl) controlStopped = await this.controlAgent.interrupt(userId).catch(() => false);
     this.queued.delete(userId);
     const targetStopped = await this.sessions.stop(userId);
+    await this.stopTyping(userId);
     if (controlStopped && targetStopped) {
       await this.reply(userId, '会话管理 Agent 和 Codex 任务已停止。');
     } else if (controlStopped) {
@@ -916,6 +880,7 @@ export class BridgeApp {
 
   private async exit(userId: string): Promise<void> {
     this.queued.delete(userId);
+    await this.stopTyping(userId);
     if (this.store.getControl(userId)) {
       await this.controlAgent.interrupt(userId).catch(() => false);
       this.leaveControl(userId);
@@ -939,11 +904,13 @@ export class BridgeApp {
   }
 
   private async stopBeforeSwitch(userId: string): Promise<void> {
+    this.queued.delete(userId);
+    if (!this.store.getBinding(userId)) return;
     const status = await this.sessions.status(userId);
     if (!status.running) return;
     await this.reply(userId, '正在停止任务……');
-    this.queued.delete(userId);
     await this.sessions.stop(userId);
+    await this.stopTyping(userId);
   }
 
   private async forkAfterWindowsTakeover(userId: string, error: SessionOccupiedError): Promise<boolean> {
@@ -1007,7 +974,7 @@ export class BridgeApp {
         ? '安全接管失败：外部客户端仍有活动任务，未能安全释放目标会话。'
         : '安全接管失败：任务已空闲，但未能释放持有目标锁的外部客户端。';
       const nextStep = windowsTakeoverFailed
-        ? 'wecode 已尝试结束目标锁持有进程但仍未释放；请完全退出 Codex Desktop（包括托盘进程）后重试，也可以发送“分叉当前会话”；'
+        ? 'wecode 已尝试结束目标锁持有进程但仍未释放；请完全退出 Codex Desktop（包括托盘进程）后重试；'
         : error.running
           ? '请先在外部客户端停止任务并释放会话后重试；'
           : '请先退出外部 Codex 客户端或关闭该会话后重试；';
@@ -1038,7 +1005,7 @@ export class BridgeApp {
     });
     await this.reply(
       userId,
-      `${message}\n回复“确认接管”进行安全接管；确认后，若外部客户端仍持有该会话锁，wecode 会尝试结束准确的锁持有进程，这可能关闭本地 Codex Desktop 的会话进程。仍无法释放时会自动复制已保存历史创建新会话。\n也可以回复“分叉当前会话”；否则回复“退出”。`,
+      `${message}\n回复“确认接管”进行安全接管；确认后，若外部客户端仍持有该会话锁，wecode 会尝试结束准确的锁持有进程，这可能关闭本地 Codex Desktop 的会话进程。仍无法释放时会自动复制已保存历史创建新会话；否则回复“退出”。`,
       { source: 'bridge' },
     );
   }
@@ -1052,23 +1019,6 @@ export class BridgeApp {
     return Boolean(control && Date.now() - control.lastActivityAt >= this.config.controlTimeoutMs);
   }
 
-  private async controlCatalog(): Promise<string> {
-    const list = await this.sessions.list();
-    if (!list.length) return '可恢复原生 Codex 会话：无';
-    const entries = list.map((thread) => JSON.stringify({
-      cli: thread.cli ?? 'codex',
-      thread_id: thread.id,
-      cwd: thread.cwd ?? null,
-      name: thread.name ?? null,
-      preview: thread.preview ?? null,
-      created_at: formatTimestamp(thread.createdAt),
-      updated_at: formatTimestamp(thread.updatedAt),
-      status: thread.status?.type ?? null,
-      active_flags: thread.status?.activeFlags ?? [],
-    }));
-    return `可恢复原生 Codex 会话原始 catalog（JSONL；只供你筛选和生成展示文本，不能向用户暴露 thread_id）：\n${entries.join('\n')}`;
-  }
-
   private sessionCreatedText(binding: SessionBinding): string {
     return `已新建会话\n目录：${binding.cwd}\n${SESSION_ACTIVE_HINT}`;
   }
@@ -1079,6 +1029,65 @@ export class BridgeApp {
 
   private forkedText(binding: SessionBinding): string {
     return `已分叉新会话\n原会话仍保留，当前已绑定新会话\n目录：${binding.cwd}\n${SESSION_ACTIVE_HINT}`;
+  }
+
+  private startTyping(userId: string): void {
+    const contextToken = this.store.get().contextTokens[userId] ?? '';
+    if (!contextToken) return;
+    const existing = this.typingIndicators.get(userId);
+    if (existing?.contextToken === contextToken) return;
+    if (existing) void this.stopTyping(userId);
+
+    const indicator: TypingIndicator = { contextToken, stopped: false };
+    this.typingIndicators.set(userId, indicator);
+    void this.pulseTyping(userId, indicator);
+  }
+
+  private async pulseTyping(userId: string, indicator: TypingIndicator): Promise<boolean> {
+    if (indicator.stopped || this.typingIndicators.get(userId) !== indicator) return false;
+    if (indicator.running) return indicator.running;
+
+    const running = this.sendTypingStatus(userId, indicator.contextToken, 1);
+    indicator.running = running;
+    let ok = false;
+    try {
+      ok = await running;
+    } finally {
+      if (indicator.running === running) indicator.running = undefined;
+    }
+    if (!ok) {
+      if (this.typingIndicators.get(userId) === indicator) this.typingIndicators.delete(userId);
+      return false;
+    }
+    if (indicator.stopped || this.typingIndicators.get(userId) !== indicator) return false;
+    if (!indicator.timer) {
+      indicator.timer = setInterval(() => {
+        void this.pulseTyping(userId, indicator);
+      }, TYPING_KEEPALIVE_MS);
+      indicator.timer.unref();
+    }
+    return true;
+  }
+
+  private async stopTyping(userId: string): Promise<void> {
+    const indicator = this.typingIndicators.get(userId);
+    if (!indicator) return;
+    indicator.stopped = true;
+    if (indicator.timer) {
+      clearInterval(indicator.timer);
+      indicator.timer = undefined;
+    }
+    if (this.typingIndicators.get(userId) === indicator) this.typingIndicators.delete(userId);
+    if (indicator.running) await indicator.running.catch(() => false);
+    await this.sendTypingStatus(userId, indicator.contextToken, 2);
+  }
+
+  private async sendTypingStatus(userId: string, contextToken: string, status: number): Promise<boolean> {
+    try {
+      return await this.ilink.sendTyping(userId, contextToken, status);
+    } catch {
+      return false;
+    }
   }
 
   private async reply(
@@ -1131,6 +1140,8 @@ export class BridgeApp {
       return false;
     }
     this.awaitingFreshContext.delete(userId);
+    const indicator = this.typingIndicators.get(userId);
+    if (indicator) void this.pulseTyping(userId, indicator);
     return true;
   }
 
@@ -1145,169 +1156,56 @@ export class BridgeApp {
 
 function formatQuickSessionList(sessions: ThreadSummary[]): string {
   if (!sessions.length) return '没有找到历史 Codex 会话。';
-  const rows = sessions.map((thread, index) => [
-    `${index + 1}. **${sessionDisplayLabel(thread)}** — ${sessionPreview(thread)}`,
-    '',
-    `更新时间：${formatTimestamp(thread.updatedAt)}`,
-  ].join('\n'));
-  return rows.join('\n') + '\n\n回复序号即可切换（10 分钟内）。';
-}
-
-function shouldRefreshSessionCatalog(text: string): boolean {
-  const value = text.trim();
-  if (!value || /^(?:第\s*\d+\s*个?|(?:刚才|上一个|最上面|第一个|最后一个)(?:那个|会话)?)$/u.test(value)) return false;
-  return /(?:列出|查找|搜索|检索|查看|查询|切换|恢复|选择|分叉|复制).*(?:会话|任务)|(?:会话|任务).*(?:列出|查找|搜索|检索|查看|查询|切换|恢复|选择|分叉|复制)/u.test(value);
-}
-
-function formatSessionInspectionList(inspections: SessionInspection[], activeOnly: boolean): string {
-  const readOnlyHint = '\n\n本次为只读查看，不会接管或绑定会话。';
-  if (!inspections.length) {
-    return (activeOnly ? '当前没有检测到正在运行的 Codex 任务。' : '没有找到最近的 Codex 任务。') + readOnlyHint;
+  const ordered = orderSessionsForDisplay(sessions);
+  const groups: Array<{ name: string; rows: string[] }> = [];
+  let index = 0;
+  for (const thread of ordered) {
+    const name = sessionGroupName(thread);
+    let group = groups.at(-1);
+    if (!group || group.name !== name) {
+      group = { name, rows: [] };
+      groups.push(group);
+    }
+    index += 1;
+    group.rows.push(`${index}. ${sessionRowTitle(thread)} · ${formatShortTimestamp(thread.updatedAt)}`);
   }
-  const title = activeOnly ? '当前活动 Codex 任务（只读）' : '最近 Codex 任务（只读）';
-  const rows = inspections.map((inspection, index) => {
-    const thread = inspection.snapshot ?? inspection.summary;
-    const actionLabel = inspectionThreadIsRunning(thread) ? '当前动作' : '最近动作';
-    const statusType = cleanActivityText(thread.status?.type)?.toLowerCase();
-    const status = statusType === 'notloaded' ? undefined : formatInspectionStatus(thread.status);
-    return [
-      `${index + 1}. **${sessionDisplayLabel(thread)}**`,
-      ...(status ? [`状态：${status}`] : []),
-      `${actionLabel}：${describeInspectionActivity(inspection)}`,
-      '',
-      `更新时间：${formatTimestamp(inspection.summary.updatedAt ?? inspection.snapshot?.updatedAt)}`,
-    ].join('\n');
-  });
-  return `${title}\n\n${rows.join('\n\n')}${readOnlyHint}`;
+  return `${groups.map((group) => `${group.name}\n${group.rows.join('\n')}`).join('\n\n')}\n\n回复序号选择`;
 }
 
-function describeInspectionActivity(inspection: SessionInspection): string {
-  const thread = inspection.snapshot ?? inspection.summary;
-  const currentlyRunning = inspectionThreadIsRunning(thread);
-  const turn = latestInspectionTurn(inspection.snapshot);
-  const item = latestInspectionItem(turn);
-  if (item) return describeInspectionItem(item, currentlyRunning);
-  if (turn?.status) return `turn ${formatInspectionItemStatus(turn.status).replace(/[（）]/gu, '') || turn.status}`;
-  const preview = cleanActivityText(thread.preview || thread.name);
-  if (preview) return truncateActivityText(preview);
-  return currentlyRunning
-    ? '会话正在运行，暂未读到最新任务项'
-    : '暂无可展示的任务详情';
-}
-
-function latestInspectionTurn(snapshot?: ThreadSnapshot): ThreadTurnSummary | undefined {
-  const turns = snapshot?.turns ?? [];
-  return [...turns].reverse().find(isInspectionTurnRunning) ?? turns.at(-1);
-}
-
-function latestInspectionItem(turn?: ThreadTurnSummary): ThreadItemSummary | undefined {
-  const items = turn?.items ?? [];
-  return [...items].reverse().find(isInspectionItemRunning) ?? items.at(-1);
-}
-
-function describeInspectionItem(item: ThreadItemSummary, currentlyRunning: boolean): string {
-  const type = cleanActivityText(item.type)?.toLowerCase().replace(/[^a-z0-9]/gu, '') || '';
-  const suffix = formatInspectionItemStatus(item.status);
-  if (type.includes('reasoning')) return `${currentlyRunning ? '正在分析任务' : '已分析任务'}${suffix}`;
-  if (type.includes('contextcompaction')) return `${currentlyRunning ? '正在整理会话上下文' : '已整理会话上下文'}${suffix}`;
-  if (type.includes('commandexecution')) {
-    const command = cleanActivityText(item.command);
-    return `执行命令${command ? `：${truncateActivityText(command, 160)}` : ''}${suffix}`;
+function orderSessionsForDisplay(sessions: ThreadSummary[]): ThreadSummary[] {
+  const groups = new Map<string, ThreadSummary[]>();
+  for (const session of sessions) {
+    const name = sessionGroupName(session);
+    const group = groups.get(name) ?? [];
+    group.push(session);
+    groups.set(name, group);
   }
-  if (type.includes('filechange')) {
-    const changes = Array.isArray(item.changes) ? item.changes : [];
-    const paths = changes
-      .map((change) => asActivityRecord(change))
-      .map((change) => cleanActivityText(change?.path) || cleanActivityText(change?.filePath))
-      .filter((value): value is string => Boolean(value));
-    return `修改文件${paths.length ? `：${paths.slice(0, 4).join('、')}${paths.length > 4 ? ' 等' : ''}` : ''}${suffix}`;
-  }
-  if (type.includes('mcptoolcall')) {
-    const server = cleanActivityText(item.server) || cleanActivityText(item.serverName);
-    const tool = cleanActivityText(item.tool) || cleanActivityText(item.name);
-    const name = [server, tool].filter(Boolean).join('/');
-    return `调用工具${name ? `：${name}` : ''}${suffix}`;
-  }
-  if (type.includes('plan')) {
-    const plan = cleanActivityText(item.text) || cleanActivityText(item.summary);
-    return `执行计划${plan ? `：${truncateActivityText(plan)}` : ''}${suffix}`;
-  }
-  if (type.includes('agentmessage')) {
-    const text = cleanActivityText(item.text);
-    return `${item.phase === 'commentary' ? '进度' : '生成回复'}${text ? `：${truncateActivityText(text)}` : ''}${suffix}`;
-  }
-  if (type.includes('usermessage')) {
-    const text = cleanActivityText(item.text);
-    return `处理请求${text ? `：${truncateActivityText(text)}` : ''}${suffix}`;
-  }
-  return `${type ? `处理 ${type}` : currentlyRunning ? '正在处理任务' : '已处理任务'}${suffix}`;
+  return [...groups.values()].flat();
 }
 
-function formatInspectionStatus(status?: ThreadSummary['status']): string {
-  const type = cleanActivityText(status?.type)?.toLowerCase() || '';
-  const labels: Record<string, string> = {
-    active: '处理中',
-    running: '处理中',
-    in_progress: '处理中',
-    inprogress: '处理中',
-    idle: '空闲',
-    notloaded: '历史会话（未加载）',
-    systemerror: '系统错误',
-  };
-  const label = labels[type] || status?.type || (type || '状态未知');
-  const flags = (status?.activeFlags ?? []).map(formatInspectionFlag).filter(Boolean);
-  return flags.length ? `${label}（${flags.join('、')}）` : label;
+function sessionGroupName(thread: ThreadSummary): string {
+  return sessionProjectName(thread) || '其他会话';
 }
 
-function formatInspectionFlag(flag: string): string {
-  const labels: Record<string, string> = {
-    waitingOnApproval: '等待审批',
-    waitingOnUserInput: '等待用户输入',
-    waitingOnUser: '等待用户输入',
-    running: '运行中',
-  };
-  return labels[flag] || flag;
+function sessionRowTitle(thread: ThreadSummary): string {
+  const project = sessionProjectName(thread);
+  const name = cleanActivityText(thread.name);
+  const preview = cleanActivityText(thread.preview);
+  const value = name && name !== project ? name : preview || name || '未命名会话';
+  return truncateActivityText(value, 72);
 }
 
-function formatInspectionItemStatus(status?: string): string {
-  const value = cleanActivityText(status)?.toLowerCase() || '';
-  if (!value) return '';
-  const labels: Record<string, string> = {
-    active: '运行中',
-    running: '运行中',
-    in_progress: '运行中',
-    inprogress: '运行中',
-    started: '运行中',
-    waiting: '等待中',
-    waitingonapproval: '等待审批',
-    waitingonuserinput: '等待用户输入',
-    completed: '已完成',
-    failed: '失败',
-    interrupted: '已中断',
-  };
-  return `（${labels[value.replace(/[^a-z0-9]/gu, '')] || status}）`;
+function formatShortTimestamp(timestamp?: number | string): string {
+  const milliseconds = normalizeTimestamp(timestamp);
+  if (milliseconds === undefined) return '时间未知';
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) return '时间未知';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function inspectionThreadIsRunning(thread: ThreadSummary | ThreadSnapshot): boolean {
-  const type = cleanActivityText(thread.status?.type)?.toLowerCase() || '';
-  return ['active', 'running', 'in_progress', 'inprogress'].includes(type)
-    || Boolean(thread.status?.activeFlags?.length)
-    || ('turns' in thread && (thread.turns ?? []).some(isInspectionTurnRunning));
-}
-
-function isInspectionTurnRunning(turn: ThreadTurnSummary): boolean {
-  const status = cleanActivityText(turn.status)?.toLowerCase() || '';
-  return ['active', 'running', 'in_progress', 'inprogress', 'started'].includes(status) || /progress/u.test(status);
-}
-
-function isInspectionItemRunning(item: ThreadItemSummary): boolean {
-  const status = cleanActivityText(item.status)?.toLowerCase() || '';
-  return ['active', 'running', 'in_progress', 'inprogress', 'started', 'waiting'].includes(status)
-    || /progress/u.test(status);
-}
-
-function asActivityRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+function pathName(cwd: string): string {
+  return cwd.replace(/[\\/]+$/u, '').split(/[\\/]/u).at(-1) || cwd;
 }
 
 function cleanActivityText(value: unknown): string | undefined {
@@ -1324,26 +1222,6 @@ function sessionProjectName(thread: ThreadSummary): string | undefined {
   const cwd = thread.cwd?.trim().replace(/[\\/]+$/u, '');
   const directory = cwd?.split(/[\\/]/u).at(-1);
   return cleanActivityText(directory);
-}
-
-function sessionDisplayName(thread: ThreadSummary): string {
-  const name = cleanActivityText(thread.name);
-  if (name) return truncateActivityText(name, 120);
-  return sessionProjectName(thread) || '未命名会话';
-}
-
-function sessionDisplayLabel(thread: ThreadSummary): string {
-  const project = sessionProjectName(thread);
-  const name = cleanActivityText(thread.name);
-  if (project && name && project !== name) {
-    return `${truncateActivityText(project, 80)} | ${truncateActivityText(name, 120)}`;
-  }
-  return sessionDisplayName(thread);
-}
-
-function sessionPreview(thread: ThreadSummary): string {
-  const value = (thread.preview || thread.name || '未命名会话').replace(/\s+/gu, ' ').trim();
-  return value.length > 160 ? value.slice(0, 157) + '...' : value;
 }
 
 function launchOptions(value: {

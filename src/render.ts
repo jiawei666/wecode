@@ -337,6 +337,7 @@ export function renderPageHtml(title: string, markdown: string, options: SharePa
 }
 
 interface ReferencedMarkdownFile {
+  sourcePath: string;
   absolutePath: string;
   relativePath: string;
   content: string;
@@ -347,13 +348,10 @@ const MARKDOWN_LINK_REFERENCE = /\[([^\]]+)\]\(([^)]+)\)/g;
 const MAX_ATTACHMENT_BYTES = 300_000;
 const MAX_ATTACHMENT_TOTAL_BYTES = 600_000;
 
-function attachmentPath(raw: string, cwd: string, realCwd: string): { absolutePath: string; relativePath: string } | null {
+function attachmentPath(raw: string, cwd: string): string | null {
   const candidate = raw.trim().replace(/^<|>$/g, '').replace(/^file:\/\//, '');
   if (!candidate.toLowerCase().endsWith('.md')) return null;
-  const absolutePath = path.resolve(path.isAbsolute(candidate) ? candidate : path.join(cwd, candidate));
-  const relativePath = path.relative(realCwd, absolutePath);
-  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return null;
-  return { absolutePath, relativePath };
+  return path.resolve(path.isAbsolute(candidate) ? candidate : path.join(cwd, candidate));
 }
 
 async function loadReferencedMarkdownFiles(markdown: string, cwd?: string): Promise<ReferencedMarkdownFile[]> {
@@ -362,11 +360,13 @@ async function loadReferencedMarkdownFiles(markdown: string, cwd?: string): Prom
   if (!realCwd) return [];
   const candidates = new Set(markdown.match(MARKDOWN_FILE_REFERENCE) ?? []);
   const attachments: ReferencedMarkdownFile[] = [];
+  const seen = new Set<string>();
   let totalBytes = 0;
   for (const candidate of candidates) {
-    const resolved = attachmentPath(candidate, cwd, realCwd);
-    if (!resolved) continue;
-    const realFile = await realpath(resolved.absolutePath).catch(() => null);
+    const sourcePath = attachmentPath(candidate, cwd);
+    if (!sourcePath || seen.has(sourcePath)) continue;
+    seen.add(sourcePath);
+    const realFile = await realpath(sourcePath).catch(() => null);
     if (!realFile) continue;
     const relativePath = path.relative(realCwd, realFile);
     if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) continue;
@@ -375,7 +375,7 @@ async function loadReferencedMarkdownFiles(markdown: string, cwd?: string): Prom
     const size = Buffer.byteLength(content, 'utf8');
     if (size > MAX_ATTACHMENT_BYTES || totalBytes + size > MAX_ATTACHMENT_TOTAL_BYTES) continue;
     totalBytes += size;
-    attachments.push({ absolutePath: realFile, relativePath, content });
+    attachments.push({ sourcePath, absolutePath: realFile, relativePath, content });
   }
   return attachments;
 }
@@ -384,8 +384,8 @@ async function includeReferencedMarkdown(markdown: string, cwd?: string): Promis
   const attachments = await loadReferencedMarkdownFiles(markdown, cwd);
   if (!attachments.length) return markdown;
   const rewritten = markdown.replace(MARKDOWN_LINK_REFERENCE, (full, label: string, target: string) => {
-    const resolved = cwd ? attachmentPath(target, cwd, path.resolve(cwd)) : null;
-    const attachment = resolved ? attachments.find((item) => item.relativePath === resolved.relativePath) : undefined;
+    const sourcePath = cwd ? attachmentPath(target, cwd) : null;
+    const attachment = sourcePath ? attachments.find((item) => item.sourcePath === sourcePath) : undefined;
     return attachment ? `[${label}](#attachments)` : full;
   });
   const body = attachments

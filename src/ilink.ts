@@ -40,6 +40,13 @@ interface UpdatesResponse {
   get_updates_buf?: string;
 }
 
+interface TypingConfigResponse {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+  typing_ticket?: string;
+}
+
 export interface InboundMessage {
   from: string;
   messageId: string;
@@ -83,6 +90,7 @@ const ITEM_VOICE = 3;
 const ITEM_FILE = 4;
 const ITEM_VIDEO = 5;
 const SESSION_EXPIRED = -14;
+const TYPING_CONFIG_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_INCOMING_MEDIA_BYTES = 25 * 1024 * 1024;
 const MAX_INCOMING_MESSAGE_MEDIA_BYTES = 50 * 1024 * 1024;
 const MAX_INCOMING_MESSAGE_MEDIA_COUNT = 5;
@@ -467,6 +475,9 @@ function safeDownloadError(error: unknown): string {
 }
 
 export class IlinkClient {
+  private readonly typingTickets = new Map<string, { ticket: string; expiresAt: number }>();
+  private readonly typingTicketRequests = new Map<string, Promise<string | null>>();
+
   constructor(private readonly config: AppConfig, private readonly token: string) {}
 
   private headers(): Record<string, string> {
@@ -588,9 +599,88 @@ export class IlinkClient {
     }
   }
 
-  async sendTyping(_to: string, _contextToken: string, _status = 1): Promise<void> {
-    // iLink deployments differ on the typing endpoint. Final replies are stable;
-    // keep this seam for a later capability-detected implementation.
+  async prepareTyping(to: string, contextToken: string): Promise<boolean> {
+    return Boolean(await this.typingTicket(to, contextToken));
+  }
+
+  async sendTyping(to: string, contextToken: string, status = 1): Promise<boolean> {
+    const ticket = await this.typingTicket(to, contextToken);
+    if (!ticket) return false;
+    try {
+      const response = await request(
+        this.url('ilink/bot/sendtyping'),
+        {
+          method: 'POST',
+          headers: this.headers(),
+          body: JSON.stringify({
+            ilink_user_id: to,
+            typing_ticket: ticket,
+            status,
+            base_info: { channel_version: this.config.channelVersion },
+          }),
+        },
+        10_000,
+      );
+      const raw = await response.text();
+      if (!response.ok) {
+        this.typingTickets.delete(to);
+        return false;
+      }
+      if (!raw.trim()) return true;
+      try {
+        const parsed = JSON.parse(raw) as { ret?: number; errcode?: number };
+        const code = parsed.ret ?? parsed.errcode ?? 0;
+        if (code !== 0) this.typingTickets.delete(to);
+        return code === 0;
+      } catch {
+        return true;
+      }
+    } catch {
+      this.typingTickets.delete(to);
+      return false;
+    }
+  }
+
+  private async typingTicket(to: string, contextToken: string): Promise<string | null> {
+    const cached = this.typingTickets.get(to);
+    if (cached && cached.expiresAt > Date.now()) return cached.ticket;
+    if (!contextToken.trim()) return null;
+
+    const pending = this.typingTicketRequests.get(to);
+    if (pending) return pending;
+    const requestTicket = this.fetchTypingTicket(to, contextToken);
+    this.typingTicketRequests.set(to, requestTicket);
+    try {
+      return await requestTicket;
+    } finally {
+      if (this.typingTicketRequests.get(to) === requestTicket) this.typingTicketRequests.delete(to);
+    }
+  }
+
+  private async fetchTypingTicket(to: string, contextToken: string): Promise<string | null> {
+    try {
+      const response = await request(
+        this.url('ilink/bot/getconfig'),
+        {
+          method: 'POST',
+          headers: this.headers(),
+          body: JSON.stringify({
+            ilink_user_id: to,
+            context_token: contextToken,
+            base_info: { channel_version: this.config.channelVersion },
+          }),
+        },
+        10_000,
+      );
+      const payload = await jsonResponse<TypingConfigResponse>(response);
+      const code = payload.ret ?? payload.errcode ?? 0;
+      const ticket = payload.typing_ticket?.trim() ?? '';
+      if (code !== 0 || !ticket) return null;
+      this.typingTickets.set(to, { ticket, expiresAt: Date.now() + TYPING_CONFIG_TTL_MS });
+      return ticket;
+    } catch {
+      return null;
+    }
   }
 }
 

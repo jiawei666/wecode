@@ -31,6 +31,52 @@ test('classifies iLink ret=-2 prepare failed as requiring a fresh context token'
   }
 });
 
+test('prefetches and caches the typing ticket before sending typing status', async () => {
+  const configBodies: Array<Record<string, unknown>> = [];
+  const typingBodies: Array<Record<string, unknown>> = [];
+  const server = createServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    const payload = JSON.parse(body) as Record<string, unknown>;
+    if (request.url === '/ilink/bot/getconfig') {
+      configBodies.push(payload);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ret: 0, typing_ticket: 'typing-ticket' }));
+      return;
+    }
+    if (request.url === '/ilink/bot/sendtyping') {
+      typingBodies.push(payload);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ret: 0 }));
+      return;
+    }
+    response.writeHead(404);
+    response.end('missing');
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const client = new IlinkClient({ ...loadConfig(), apiBase: `http://127.0.0.1:${address.port}` }, 'bot-token');
+
+    assert.equal(await client.prepareTyping('wx-user', 'context-token'), true);
+    assert.equal(await client.sendTyping('wx-user', 'context-token', 1), true);
+    assert.equal(await client.sendTyping('wx-user', 'context-token', 1), true);
+    assert.equal(await client.sendTyping('wx-user', 'context-token', 2), true);
+
+    assert.equal(configBodies.length, 1);
+    assert.equal(configBodies[0]?.ilink_user_id, 'wx-user');
+    assert.equal(configBodies[0]?.context_token, 'context-token');
+    assert.deepEqual(typingBodies.map((body) => body.status), [1, 1, 2]);
+    assert.ok(typingBodies.every((body) => body.typing_ticket === 'typing-ticket'));
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});
+
 test('downloads and decrypts inbound images and files while keeping attachment failures isolated', async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wecode-ilink-media-'));
   const key = Buffer.from('0123456789abcdef');

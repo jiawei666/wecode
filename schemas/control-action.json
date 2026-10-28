@@ -2,35 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["action", "cli", "cwd", "thread_id", "limit", "text", "title", "model", "reasoning_effort", "fast", "takeover", "note", "presentation", "reason"],
+  "required": ["action", "cwd", "limit", "text"],
   "properties": {
     "action": {
       "type": "string",
       "enum": [
-        "request_catalog",
         "new_session",
-        "switch_session",
-        "fork_session",
         "list_sessions",
-        "status",
-        "interrupt",
-        "set_note",
         "reply",
         "ask"
       ]
     },
-    "cli": { "type": ["string", "null"], "enum": ["codex", "cc", null] },
     "cwd": { "type": ["string", "null"] },
-    "thread_id": { "type": ["string", "null"] },
     "limit": { "type": ["integer", "null"], "minimum": 1 },
-    "text": { "type": ["string", "null"] },
-    "title": { "type": ["string", "null"] },
-    "model": { "type": ["string", "null"] },
-    "reasoning_effort": { "type": ["string", "null"] },
-    "fast": { "type": ["boolean", "null"] },
-    "takeover": { "type": ["boolean", "null"] },
-    "note": { "type": ["string", "null"] },
-    "presentation": { "type": ["string", "null"], "enum": ["chat", "page", null] },
-    "reason": { "type": ["string", "null"] }
+    "text": { "type": ["string", "null"] }
   }
 }
