@@ -23,14 +23,14 @@ function message(text: string, id: string): InboundMessage {
   };
 }
 
-test('sends the post-login welcome once and merges it with automatic management', async () => {
+test('sends the post-login welcome once and consumes the fallback first message', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-welcome-'));
   const store = new StateStore(path.join(directory, 'state.json'));
   await store.init();
   store.update((state) => { state.welcomePending = true; });
   const sent: string[] = [];
   const fakeControl = {
-    run: async () => ({ action: { action: 'reply' as const, text: '会话管理 Agent 已响应。' }, sessionId: 'control-thread' }),
+    run: async () => ({ action: { action: 'reply' as const, text: '小微已响应。' }, sessionId: 'control-thread' }),
     interrupt: async () => false,
     consumeInterrupted: () => false,
     isRunning: () => false,
@@ -54,12 +54,13 @@ test('sends the post-login welcome once and merges it with automatic management'
     assert.match(sent[0] || '', /常用命令：状态｜停止｜退出/);
     assert.match(sent[0] || '', /进入本机维护模式/);
     assert.doesNotMatch(sent[0] || '', /帮助|查看活动|查看最近任务|分叉|列出最近 20 个/);
-    assert.match(sent[0] || '', /当前没有会话，已进入会话管理模式/);
+    assert.doesNotMatch(sent[0] || '', /当前没有会话，已进入会话管理模式/);
     assert.equal(sent.filter((text) => text.includes('欢迎使用 wecode')).length, 1);
     assert.equal(store.get().welcomePending, false);
 
     await bridge.handle(message('帮助', 'welcome-2'));
     assert.equal(sent.filter((text) => text.includes('欢迎使用 wecode')).length, 1);
+    assert.match(sent[1] || '', /当前没有会话，已进入会话管理模式/);
   } finally {
     await bridge.close();
     await store.save();
@@ -75,7 +76,7 @@ test('does not echo raw Agent output when control action parsing fails', async (
   const leakedSkill = '<skill>\\nname: ai-tester-test\\n内容不应回显\\n</skill>';
   const fakeControl = {
     run: async () => {
-      throw new Error('会话管理 Agent 未返回有效 action JSON：' + leakedSkill);
+      throw new Error('小微未返回有效 action JSON：' + leakedSkill);
     },
     interrupt: async () => false,
     consumeInterrupted: () => false,
@@ -88,10 +89,77 @@ test('does not echo raw Agent output when control action parsing fails', async (
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('为什么刚才报错了', 'control-error-1'));
+    await bridge.handle(message('小微，为什么刚才报错了', 'control-error-1'));
     const visible = sent.join('\\n');
     assert.match(visible, /返回格式不正确/);
     assert.doesNotMatch(visible, /<skill>|ai-tester-test|内容不应回显/);
+  } finally {
+    await bridge.close();
+    await store.save();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('unbound ordinary message enters Xiaowei and lists the recent five without calling the Agent', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-bridge-auto-list-'));
+  const store = new StateStore(path.join(directory, 'state.json'));
+  await store.init();
+  const sent: string[] = [];
+  const used: string[] = [];
+  const project = path.join(directory, 'wecode');
+  const sessions = Array.from({ length: 6 }, (_, index) => ({
+    id: `thread-${index + 1}`,
+    cwd: project,
+    preview: `会话 ${index + 1}`,
+    updatedAt: 1_700_000_010 - index,
+    cli: 'codex' as const,
+  }));
+  let controlRuns = 0;
+  const fakeControl = {
+    run: async () => {
+      controlRuns += 1;
+      throw new Error('普通消息不应调用小微');
+    },
+    interrupt: async () => false,
+    consumeInterrupted: () => false,
+    isRunning: () => false,
+    close: async () => undefined,
+  } as unknown as ControlAgent;
+  const fakeSessions = {
+    list: async () => sessions,
+    use: async (_userId: string, threadId: string, cwd?: string) => {
+      used.push(threadId);
+      const binding: SessionBinding = {
+        threadId,
+        cwd: cwd || directory,
+        cli: 'codex',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      };
+      store.setBinding('user', binding);
+      return { binding };
+    },
+    close: async () => undefined,
+  } as unknown as SessionManager;
+  const fakeIlink = { sendText: async (_to: string, text: string) => { sent.push(text); return { ok: true }; } } as never;
+  const config = { ...loadConfig(), dataDir: directory, stateFile: path.join(directory, 'state.json') };
+  const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
+
+  try {
+    await bridge.handle(message('你好', 'auto-list-1'));
+    assert.equal(controlRuns, 0);
+    assert.match(sent[0] || '', /当前没有会话，已进入会话管理模式/);
+    const output = sent.at(-1) || '';
+    assert.match(output, /wecode\n1\. 会话 1/);
+    assert.equal((output.match(/^\d+\./gm) || []).length, 5);
+    assert.doesNotMatch(output, /会话 6/);
+    assert.match(output, /回复序号选择$/);
+    assert.ok(store.getControl('user'));
+
+    await bridge.handle(message('1', 'auto-list-select'));
+    assert.deepEqual(used, ['thread-1']);
+    assert.equal(store.getBinding('user')?.threadId, 'thread-1');
+    assert.equal(store.getControl('user'), undefined);
   } finally {
     await bridge.close();
     await store.save();
@@ -168,8 +236,9 @@ test('automatically enters session management when the current session is stale'
 
   try {
     await bridge.handle(message('继续处理刚才的任务', 'stale-session-1'));
-    assert.ok(sent.some((text) => /当前会话已失效，已进入会话管理模式/.test(text)));
-    assert.doesNotMatch(sent.join('\n'), /唤醒词|小微|小薇/);
+    const status = sent.find((text) => /当前会话已失效，已进入会话管理模式/.test(text)) || '';
+    assert.ok(status);
+    assert.doesNotMatch(status, /唤醒词|小薇/);
     assert.match(controlPrompt, /继续处理刚才的任务/);
     assert.equal(store.getBinding('user'), undefined);
     assert.equal(store.getControl('user')?.sessionId, 'control-thread');
@@ -198,7 +267,7 @@ test('interrupts an active Codex turn before entering session management through
   const fakeControl = {
     run: async () => {
       calls.push('control');
-      return { action: { action: 'reply' as const, text: '会话管理 Agent 已接管。' }, sessionId: 'control-thread' };
+      return { action: { action: 'reply' as const, text: '小微已接管。' }, sessionId: 'control-thread' };
     },
     interrupt: async () => false,
     consumeInterrupted: () => false,
@@ -221,7 +290,7 @@ test('interrupts an active Codex turn before entering session management through
     await bridge.handle(message('小微，帮我切换到另一个会话', 'wake-interrupt-1'));
     assert.deepEqual(calls, ['stop', 'control']);
     assert.match(sent[0] || '', /正在停止任务/);
-    assert.match(sent.at(-1) || '', /会话管理 Agent 已接管/);
+    assert.match(sent.at(-1) || '', /小微已接管/);
     assert.equal(store.getControl('user')?.sessionId, 'control-thread');
   } finally {
     await bridge.close();
@@ -664,7 +733,7 @@ test('bare Xiaowei lists the global recent five grouped by project without calli
   const fakeControl = {
     run: async () => {
       controlRuns += 1;
-      throw new Error('裸唤醒不应调用会话管理 Agent');
+      throw new Error('裸唤醒不应调用小微');
     },
     interrupt: async () => false,
     consumeInterrupted: () => false,
@@ -799,7 +868,7 @@ test('natural-language project lookup returns one flat local list and supports n
   const bridge = new BridgeApp(config, store, fakeIlink, fakeSessions, fakeControl);
 
   try {
-    await bridge.handle(message('小薇，查找 agency-cloud-core 最近 5 个会话', 'project-list'));
+    await bridge.handle(message('查找 agency-cloud-core 最近 5 个会话', 'project-list'));
     assert.match(controlPrompt, /历史项目索引/);
     assert.match(controlPrompt, new RegExp(project.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.deepEqual(listCalls, [undefined, project]);

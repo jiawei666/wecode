@@ -181,6 +181,7 @@ async function runBridge(config: ReturnType<typeof loadConfig>, store: StateStor
 async function login(config: ReturnType<typeof loadConfig>, store: StateStore, continueRunning = false): Promise<void> {
   if (continueRunning) process.stdout.write('\n首次启动，先完成一次微信扫码登录。\n');
   const result = await loginWithQr(config);
+  store.prepareForLogin(config.bindingHistoryLimit);
   store.update((state) => {
     state.token = result.token;
     state.botId = result.botId;

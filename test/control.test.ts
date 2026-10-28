@@ -37,7 +37,7 @@ test('omits a null service tier and reports the signal that ended the control Ag
       searchRoots: [],
       controlTimeoutMs: 5_000,
     });
-    await assert.rejects(agent.run('test-user', '检查状态'), /会话管理 Agent exit signal SIGTERM: fake control failure/);
+    await assert.rejects(agent.run('test-user', '检查状态'), /小微 exit signal SIGTERM: fake control failure/);
     const args = await readFile(argsPath, 'utf8');
     assert.doesNotMatch(args, /service_tier=null/);
   } finally {

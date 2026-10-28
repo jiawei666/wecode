@@ -26,9 +26,9 @@
 wecode（本机桥接层，登录后自动后台运行）
  ├─ 普通消息（有会话） ─────► Codex App Server ─► Codex 原生 threads
  ├─ 图片/文件（有会话） ────► 下载并解密 ───────► 当前 Codex 会话
- ├─ 普通消息（无会话） ─────► 自动进入会话管理 Agent
- ├─ “小微，帮我……” ───────► 中断当前 Codex 任务并进入会话管理 Agent
- ├─ “小微，进入本机维护模式……” ► 会话管理 Agent 直接执行本机维护
+ ├─ 普通消息（无会话） ─────► 自动进入小微并列出最近 5 个会话
+ ├─ “小微，帮我……” ───────► 中断当前 Codex 任务并进入小微
+ ├─ “小微，进入本机维护模式……” ► 小微直接执行本机维护
  ├─ status / login / restart / stop / logs ─► 后台进程管理
  ├─ 状态 / 停止 / 退出 ─► 本地确定性操作
  └─ 长回答
@@ -114,7 +114,7 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 
 扫码登录后，wecode 有两种工作模式。
 
-首次收到消息时会发送一次欢迎语，之后不再重复：
+iLink 不允许在用户首次发消息前主动创建会话，因此扫码绑定后需要你先在微信发送任意一条消息。wecode 收到后会先发送一次欢迎语，并且不会把这条激活消息转发给 Codex；之后不再重复：
 
 ```text
 👋 欢迎使用 wecode
@@ -147,7 +147,7 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 - wecode 启动时会从 Codex App Server 历史会话的 `cwd` 建立项目索引；每次唤醒、自然语言查找和新建会话后都会刷新。
 - 指定项目时优先从历史项目索引匹配 `cwd`，索引没有匹配才检查配置的项目搜索根目录。
 - 语音转文字兼容“小薇、小威、小唯、小伟、小巍、晓微”等常见同音写法。
-- 会话管理 Agent 只负责解释意图、按项目查找会话、按项目新建会话和本机维护；不再直接切换会话或维护备注。
+- 小微只负责解释意图、按项目查找会话、按项目新建会话和本机维护；不再直接切换会话或维护备注。
 
 ```text
 小微，帮我在 wecode 项目新建一个会话
@@ -166,11 +166,11 @@ Windows 上执行“确认接管”或“退出”时，wecode 会调用系统 R
 小微，进入本机维护模式。请检查 wecode 当前版本，重新打包并重启服务，验证日志和进程。
 ```
 
-维护模式已经使用 wecode 为控制 Agent 配置的本机终端权限。它不会因为进入维护模式主动重建会话管理 Agent；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。如果本机 Codex 提示由 wecode 使用过的会话仍被占用，先执行 `wecode restart`；新版会在释放最后一个绑定时回收本实例启动的 App Server，并在停止 wecode 时结束同一进程组里的 App Server。退出绑定时也会主动停止原生仍在运行的 turn。
+维护模式已经使用 wecode 为小微配置的本机终端权限。它不会因为进入维护模式主动重建小微；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。如果本机 Codex 提示由 wecode 使用过的会话仍被占用，先执行 `wecode restart`；新版会在释放最后一个绑定时回收本实例启动的 App Server，并在停止 wecode 时结束同一进程组里的 App Server。退出绑定时也会主动停止原生仍在运行的 turn。
 
 Codex 的用户可见 commentary/preamble（例如“我先查看两张截图……”）会合并后发送到微信，不添加“思路摘要”或“处理提示”前缀；内部 reasoning summary 不转发，任务完成后的最终回复会单独发送。需要调整 Codex 生成的摘要级别时，可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
-项目有重名时，会话管理 Agent 会要求更具体的项目名或路径，不会在多个目录之间猜。新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出` 可以直接使用。
+项目有重名时，小微会要求更具体的项目名或路径，不会在多个目录之间猜。新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出` 可以直接使用。
 
 ## 长文案与 Cloudflare 临时链接
 
@@ -267,6 +267,7 @@ wecode 默认请求 Codex 生成 `detailed` reasoning summary；其中用户可�
 - `node:events ... Unhandled 'error' event`：通常是子进程命令不存在；重新运行 Windows 一键安装脚本，确认 `codex --version` 和 `cloudflared --version` 后再执行 `wecode restart`。
 - 后台启动后没有响应：执行 `wecode status` 和 `wecode logs` 查看进程与错误日志。
 - 微信发送日志出现 `prepare failed`：通常是长任务结束时使用的 `context_token` 已过期，不等同于发送频率过高；wecode 会保留未送达的最终结果，收到下一条消息刷新 token 后优先发送。
+- 刚扫码绑定后没有收到欢迎语：这是 iLink 的首次会话限制；先在微信发送任意一条消息，wecode 会立即发送欢迎语。不要用无 `context_token` 的主动发送请求，服务端可能返回成功但实际静默丢弃。
 - 分享页提示未安装 `cloudflared`：执行 `cloudflared --version`；如果命令不在 `PATH`，在配置文件中填写绝对路径。
 - `reasoning_effort must not be empty`：wecode 不会向 Codex 发送空的 `model_reasoning_effort`；如果仍出现，执行 `wecode restart` 后查看最新日志。
 - `timeout waiting for child process to exit`：这是 Codex App Server 刷新模型列表的外部警告；不影响已能使用的会话，先执行 `wecode restart`，持续出现时升级 Codex CLI。

@@ -14,7 +14,7 @@ export interface ControlResult {
 }
 
 export function controlInstructions(homeDir: string, searchRoots: string[]): string {
-  return `你是 wecode 的会话管理 Agent，同时也是用户明确授权的本机维护 Agent。你只负责三件事：解释用户意图、按项目查找历史会话、按项目新建会话。用户明确要求本机维护时，你直接使用终端和文件工具完成维护。
+  return `你是 wecode 的小微，同时也是用户明确授权的本机维护助手。你只负责三件事：解释用户意图、按项目查找历史会话、按项目新建会话。用户明确要求本机维护时，你直接使用终端和文件工具完成维护。
 
 系统会在本轮消息中预先提供“历史项目索引”和“最近会话”。这些数据来自 Codex App Server 的真实历史，是第一优先级：
 - 用户提到项目时，先在历史项目索引中匹配最后一级目录名；大小写、空格、短横线、下划线可宽松匹配。
@@ -58,7 +58,7 @@ export class ControlAgent {
       // persisted rollout. Recreate only the control conversation and let the
       // bridge continue with the current request instead of losing the mode.
       if (!previousSessionId || !/no rollout found|thread not found/i.test(errorMessage(error))) throw error;
-      return this.runOnce(userId, `${prompt}\n\n会话管理 Agent 会话恢复失败，请基于当前上下文继续。`, undefined);
+      return this.runOnce(userId, `${prompt}\n\n小微会话恢复失败，请基于当前上下文继续。`, undefined);
     }
   }
 
@@ -118,7 +118,7 @@ export class ControlAgent {
     const action = parseAction(finalText);
     if (!action) {
       const outputKind = finalText.trim() ? `输出 ${finalText.length} 个字符` : `stderr ${result.stderr.length} 个字符`;
-      throw new Error(`会话管理 Agent 返回格式不正确（${outputKind}）`);
+      throw new Error(`小微返回格式不正确（${outputKind}）`);
     }
     return { action, ...(result.sessionId ? { sessionId: result.sessionId } : {}) };
   }
@@ -131,7 +131,7 @@ function resolveControlSchemaPath(): string {
     path.resolve(process.cwd(), 'schemas', 'control-action.json'),
   ];
   const schemaPath = candidates.find((candidate) => existsSync(candidate));
-  if (!schemaPath) throw new Error('找不到会话管理 Agent schema：schemas/control-action.json');
+  if (!schemaPath) throw new Error('找不到小微 schema：schemas/control-action.json');
   return schemaPath;
 }
 
@@ -163,7 +163,7 @@ function runProcess(
     };
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      finish(() => reject(new Error(`会话管理 Agent 超时（${Math.round(timeoutMs / 1000)} 秒）`)));
+      finish(() => reject(new Error(`小微超时（${Math.round(timeoutMs / 1000)} 秒）`)));
     }, timeoutMs);
     child.stdout?.on('data', (chunk) => {
       stdout = cap(stdout + String(chunk), 2_000_000);
@@ -181,7 +181,7 @@ function runProcess(
           if (code === 9009 || /not recognized as an internal or external command/i.test(detail)) {
             reject(codexProcessError(command, { code }, detail));
           } else {
-            reject(new Error(detail ? `会话管理 Agent ${exitReason}: ${detail}` : `会话管理 Agent ${exitReason}`));
+            reject(new Error(detail ? `小微 ${exitReason}: ${detail}` : `小微 ${exitReason}`));
           }
         }
         else resolve({ stdout, stderr, sessionId: findSessionId(stdout) });

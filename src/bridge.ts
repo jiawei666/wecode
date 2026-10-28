@@ -224,6 +224,14 @@ export class BridgeApp {
       return;
     }
 
+    if (text && !command && !earlyBinding && !this.store.getControl(userId) && this.store.get().welcomePending) {
+      const sent = await this.sendPendingWelcome(userId);
+      if (sent) {
+        if (startsThinking) await this.stopTyping(userId);
+        return;
+      }
+    }
+
     if (!text && attachments.length === 0) {
       await this.sendPendingWelcome(userId);
       return;
@@ -307,7 +315,7 @@ export class BridgeApp {
       return;
     }
     if (!binding) {
-      await this.handleControl(userId, text, 'no-session');
+      await this.handleControl(userId, looksLikeSessionManagementRequest(text) ? text : '', 'no-session');
       return;
     }
     await this.sendToTarget(userId, text);
@@ -845,7 +853,7 @@ export class BridgeApp {
     const status = await this.sessions.status(userId);
     const control = this.store.getControl(userId);
     const mode = control
-      ? `会话管理 Agent：${this.controlAgent.isRunning(userId) ? '处理中' : '等待指令'}`
+      ? `小微：${this.controlAgent.isRunning(userId) ? '处理中' : '等待指令'}`
       : '目标 Codex';
     const queue = this.queued.get(userId)?.length ?? 0;
     if (!status.binding) {
@@ -866,13 +874,13 @@ export class BridgeApp {
     const targetStopped = await this.sessions.stop(userId);
     await this.stopTyping(userId);
     if (controlStopped && targetStopped) {
-      await this.reply(userId, '会话管理 Agent 和 Codex 任务已停止。');
+      await this.reply(userId, '小微和 Codex 任务已停止。');
     } else if (controlStopped) {
-      await this.reply(userId, '会话管理 Agent 已停止；Codex 当前空闲。');
+      await this.reply(userId, '小微已停止；Codex 当前空闲。');
     } else if (targetStopped) {
       await this.reply(userId, 'Codex 任务已停止。');
     } else if (hasControl) {
-      await this.reply(userId, '会话管理 Agent 和 Codex 都没有运行中的任务。');
+      await this.reply(userId, '小微和 Codex 都没有运行中的任务。');
     } else {
       await this.reply(userId, '当前没有运行中的任务。');
     }
@@ -884,7 +892,7 @@ export class BridgeApp {
     if (this.store.getControl(userId)) {
       await this.controlAgent.interrupt(userId).catch(() => false);
       this.leaveControl(userId);
-      await this.reply(userId, '已退出会话管理 Agent。');
+      await this.reply(userId, '已退出小微。');
       return;
     }
     const binding = this.store.getBinding(userId);
@@ -1246,8 +1254,8 @@ function errorMessage(error: unknown): string {
 function decorateReply(text: string, source: ReplySource): string {
   const value = text.trim();
   if (source === 'codex') return value;
-  if (source === 'control') return `> **会话管理 Agent**\n\n${value}`;
-  return `> **wecode 系统**\n\n${value}`;
+  if (source === 'control') return `> **小微**\n\n${value}`;
+  return `> **系统提示**\n\n${value}`;
 }
 
 function turnProgressKey(threadId: string, turnId: string): string {
@@ -1256,21 +1264,21 @@ function turnProgressKey(threadId: string, turnId: string): string {
 
 function controlErrorText(error: unknown): string {
   const message = errorMessage(error);
-  if (/interrupt|signal/i.test(message)) return '会话管理 Agent 已中断。';
+  if (/interrupt|signal/i.test(message)) return '小微已中断。';
   if (/Codex App Server (?:socket closed|connection (?:is )?closed)/i.test(message)) {
     return 'Codex App Server 连接已断开，自动重连未成功；请再发送一次切换，或执行 wecode restart。';
   }
-  if (/no rollout found|thread not found/i.test(message)) return '会话管理 Agent 会话无法恢复；当前流程仍保留。';
+  if (/no rollout found|thread not found/i.test(message)) return '小微的会话无法恢复；当前流程仍保留。';
   if (message.includes('reasoning_effort must not be empty') || message.includes('model_reasoning_effort')) {
-    return '会话管理 Agent 配置无效：model_reasoning_effort 为空；请删除空配置或设置有效推理强度后重启。';
+    return '小微配置无效：model_reasoning_effort 为空；请删除空配置或设置有效推理强度后重启。';
   }
-  if (message.includes('会话管理 Agent 返回格式不正确') || message.includes('未返回有效 action JSON')) {
-    return '会话管理 Agent 返回格式不正确；请先发送“退出”后重试，或先指定项目目录。';
+  if (message.includes('小微返回格式不正确') || message.includes('未返回有效 action JSON')) {
+    return '小微返回格式不正确；请先发送“退出”后重试，或先指定项目目录。';
   }
   if (/thread-store conflict|active writer|already in use|being used|occupied|locked|another client|其他 Codex 客户端|原生终端占用/i.test(message)) {
     return '目标会话被占用；回复“确认接管”安全恢复，或先结束外部任务。';
   }
-  return '会话管理 Agent 暂时没有完成这次请求；请稍后重试，详细原因已记录在本地日志。';
+  return '小微暂时没有完成这次请求；请稍后重试，详细原因已记录在本地日志。';
 }
 
 function userFacingError(error: unknown): string {
@@ -1296,6 +1304,18 @@ function looksLikeSkillDocument(input: string): boolean {
 
 function isStaleSessionError(error: unknown): boolean {
   return /no rollout found|thread not found/i.test(errorMessage(error));
+}
+
+function looksLikeSessionManagementRequest(input: string): boolean {
+  const text = input.trim();
+  if (!text) return false;
+  if (
+    /(?:会话|项目|工作区|目录)/u.test(text)
+    && /(?:切换|恢复|打开|使用|新建|创建|查找|搜索|找|列出|查看|看看|哪些|最近|历史)/u.test(text)
+  ) {
+    return true;
+  }
+  return /(?:本机)?维护模式|检查日志|查看日志|重启(?:一下)?\s*(?:wecode|服务)|重新打包|部署|进程状态/u.test(text);
 }
 
 function isTakeoverConfirmation(text: string): boolean {

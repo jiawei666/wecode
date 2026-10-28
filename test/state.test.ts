@@ -65,3 +65,37 @@ test('persists binding history and notes', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('clears active login state while preserving history and notes', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wechatbot-state-login-'));
+  const file = path.join(directory, 'state.json');
+  try {
+    const store = new StateStore(file);
+    await store.init();
+    const previous = {
+      threadId: 'thread-previous',
+      cwd: directory,
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+    };
+    store.setBinding('user', previous);
+    store.setControl('user', { startedAt: Date.now(), lastActivityAt: Date.now() });
+    store.setSessionNote('thread-previous', '保留会话备注');
+    store.update((state) => {
+      state.contextTokens.user = 'old-context';
+      state.pendingReplies.user = [{ text: '旧回复', options: {}, attempts: 1 }];
+    });
+
+    store.prepareForLogin(5);
+
+    assert.deepEqual(store.get().bindings, {});
+    assert.deepEqual(store.get().controls, {});
+    assert.deepEqual(store.get().contextTokens, {});
+    assert.deepEqual(store.get().pendingReplies, {});
+    assert.equal(store.getBindingHistory('user')[0]?.threadId, previous.threadId);
+    assert.equal(store.getSessionNote('thread-previous'), '保留会话备注');
+    await store.save();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

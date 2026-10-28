@@ -521,14 +521,15 @@ export class IlinkClient {
         const items = raw.item_list ?? [];
         const text = parseText(items);
         const attachments = await parseAttachments(items, this.config.cdnBase, this.config.dataDir, mediaDeadlineMs);
-        if (!text && attachments.length === 0) continue;
+        const contextToken = raw.context_token?.trim() ?? '';
+        if (!text && attachments.length === 0 && !contextToken) continue;
         messages.push({
           from,
           messageId: String(raw.message_id ?? raw.create_time_ms ?? Date.now()),
           timeMs: raw.create_time_ms ?? Date.now(),
           text,
           attachments,
-          contextToken: raw.context_token?.trim() ?? '',
+          contextToken,
           raw,
         });
       }
@@ -542,7 +543,12 @@ export class IlinkClient {
     }
   }
 
-  async sendText(to: string, text: string, contextToken: string, chunkSize = this.config.chatChunkSize): Promise<SendResult> {
+  async sendText(
+    to: string,
+    text: string,
+    contextToken: string,
+    chunkSize = this.config.chatChunkSize,
+  ): Promise<SendResult> {
     if (!contextToken.trim()) {
       return {
         ok: false,
@@ -560,6 +566,7 @@ export class IlinkClient {
   }
 
   private async sendOneText(to: string, text: string, contextToken: string): Promise<SendResult> {
+    const normalizedContextToken = contextToken.trim();
     const response = await request(
       this.url('ilink/bot/sendmessage'),
       {
@@ -573,7 +580,7 @@ export class IlinkClient {
             message_type: MSG_TYPE_BOT,
             message_state: MSG_STATE_FINISH,
             item_list: [{ type: ITEM_TEXT, text_item: { text } }],
-            context_token: contextToken,
+            ...(normalizedContextToken ? { context_token: normalizedContextToken } : {}),
           },
           base_info: { channel_version: this.config.channelVersion },
         }),

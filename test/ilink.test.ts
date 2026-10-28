@@ -31,6 +31,36 @@ test('classifies iLink ret=-2 prepare failed as requiring a fresh context token'
   }
 });
 
+test('keeps an empty post-login event when it carries a context token', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      ret: 0,
+      msgs: [{
+        message_type: 1,
+        from_user_id: 'wx-user',
+        message_id: 'bind-event',
+        context_token: 'binding-context',
+      }],
+    }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const client = new IlinkClient({ ...loadConfig(), apiBase: `http://127.0.0.1:${address.port}` }, 'bot-token');
+    const result = await client.poll('');
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.messages[0]?.text, '');
+    assert.equal(result.messages[0]?.contextToken, 'binding-context');
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});
+
 test('prefetches and caches the typing ticket before sending typing status', async () => {
   const configBodies: Array<Record<string, unknown>> = [];
   const typingBodies: Array<Record<string, unknown>> = [];

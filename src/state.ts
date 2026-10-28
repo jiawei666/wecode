@@ -121,6 +121,22 @@ export class StateStore {
     return this.state.bindings[userId];
   }
 
+  prepareForLogin(bindingHistoryLimit: number): void {
+    for (const [userId, binding] of Object.entries(this.state.bindings)) {
+      const history = this.state.bindingHistory[userId] ?? [];
+      if (history[0]?.threadId === binding.threadId) continue;
+      this.state.bindingHistory[userId] = [
+        binding,
+        ...history.filter((item) => item.threadId !== binding.threadId),
+      ].slice(0, bindingHistoryLimit);
+    }
+    this.state.bindings = {};
+    this.state.controls = {};
+    this.state.contextTokens = {};
+    this.state.pendingReplies = {};
+    void this.save();
+  }
+
   clearBinding(userId: string): void {
     delete this.state.bindings[userId];
     void this.save();
