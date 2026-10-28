@@ -1265,6 +1265,9 @@ function turnProgressKey(threadId: string, turnId: string): string {
 function controlErrorText(error: unknown): string {
   const message = errorMessage(error);
   if (/interrupt|signal/i.test(message)) return '小微已中断。';
+  if (/backend-api\/ps\/mcp|rmcp::transport::worker/i.test(message)) {
+    return '小微遇到 Codex 远程 MCP 连接中断；这次请求未完成，请稍后重试。';
+  }
   if (/Codex App Server (?:socket closed|connection (?:is )?closed)/i.test(message)) {
     return 'Codex App Server 连接已断开，自动重连未成功；请再发送一次切换，或执行 wecode restart。';
   }

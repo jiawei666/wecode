@@ -92,6 +92,12 @@ export class ControlAgent {
     const schemaPath = resolveControlSchemaPath();
     const commonArgs = [
       '--json',
+      '--disable',
+      'apps',
+      '--disable',
+      'remote_plugin',
+      '-c',
+      'mcp_servers={}',
       '--output-schema',
       schemaPath,
       '--output-last-message',

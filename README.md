@@ -168,6 +168,8 @@ iLink 不允许在用户首次发消息前主动创建会话，因此扫码绑�
 
 维护模式已经使用 wecode 为小微配置的本机终端权限。它不会因为进入维护模式主动重建小微；仅在会话确实丢失且无法恢复时才按系统错误处理。`wecode status` 会显示 wecode 与 Codex CLI 版本；更新 Codex CLI 后，wecode 在下一次 App Server 操作前会检测可执行文件版本/路径/文件指纹，发现变化会自动回收并启动新的受管 App Server。更新 wecode 自身后需要重启后台进程，`wecode` 启动入口会检测已记录的后台版本，或直接执行 `wecode restart`。如果本机 Codex 提示由 wecode 使用过的会话仍被占用，先执行 `wecode restart`；新版会在释放最后一个绑定时回收本实例启动的 App Server，并在停止 wecode 时结束同一进程组里的 App Server。退出绑定时也会主动停止原生仍在运行的 turn。
 
+小微只使用 Codex 的终端和文件工具，不加载 ChatGPT Apps、远程插件或用户配置中的 MCP server，避免外部 MCP 连接异常导致会话管理请求失败。
+
 Codex 的用户可见 commentary/preamble（例如“我先查看两张截图……”）会合并后发送到微信，不添加“思路摘要”或“处理提示”前缀；内部 reasoning summary 不转发，任务完成后的最终回复会单独发送。需要调整 Codex 生成的摘要级别时，可在 `~/.wecode/config.json` 设置 `codexReasoningSummary`，可选值为 `auto`、`concise`、`detailed`、`none`。
 
 项目有重名时，小微会要求更具体的项目名或路径，不会在多个目录之间猜。新建或切换完成后，后续普通消息会回到当前 Codex 会话。`状态`、`停止`、`退出` 可以直接使用。

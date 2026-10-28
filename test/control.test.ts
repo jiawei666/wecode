@@ -40,6 +40,9 @@ test('omits a null service tier and reports the signal that ended the control Ag
     await assert.rejects(agent.run('test-user', '检查状态'), /小微 exit signal SIGTERM: fake control failure/);
     const args = await readFile(argsPath, 'utf8');
     assert.doesNotMatch(args, /service_tier=null/);
+    assert.match(args, /--disable\napps/);
+    assert.match(args, /--disable\nremote_plugin/);
+    assert.match(args, /mcp_servers=\{\}/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
